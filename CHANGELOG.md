@@ -1,4 +1,4 @@
-## 0.0.1
+## 0.1.0
 
 * Initial release of the native Flutter background-removal plugin.
 * iOS implementation powered by Vision Framework `VNGenerateForegroundInstanceMaskRequest` (iOS 17+).

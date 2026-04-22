@@ -1,6 +1,6 @@
 name: native_cutout
 description: "AI-powered background removal using native platform APIs (iOS Vision Framework, Android ML Kit)."
-version: 0.0.1
+version: 0.1.0
 homepage: https://github.com/xcc3641/flutter_native_cutout
 repository: https://github.com/xcc3641/flutter_native_cutout
 issue_tracker: https://github.com/xcc3641/flutter_native_cutout/issues
