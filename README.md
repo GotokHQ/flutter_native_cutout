@@ -11,7 +11,7 @@ Native background removal for Flutter using platform image segmentation APIs.
 
 | Home · model manager | Cutout result |
 | :---: | :---: |
-| <img src="images/1.png" width="320" alt="Home page with Android model manager" /> | <img src="images/2.png" width="320" alt="Cutout result with cropToSubject and writeToCache toggles" /> |
+| <img src="https://raw.githubusercontent.com/xcc3641/flutter_native_cutout/main/images/1.png" width="320" alt="Home page with Android model manager" /> | <img src="https://raw.githubusercontent.com/xcc3641/flutter_native_cutout/main/images/2.png" width="320" alt="Cutout result with cropToSubject and writeToCache toggles" /> |
 
 It is built on top of:
 
@@ -48,7 +48,7 @@ Add the package to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  native_cutout: ^0.0.1
+  native_cutout: ^0.1.0
 ```
 
 Then run:
