@@ -4,6 +4,10 @@ Native background removal for Flutter using platform image segmentation APIs.
 
 `native_cutout` removes the background from a local image file and produces a transparent PNG — fully on-device, with no external API, no upload step, and no API keys.
 
+| Home · model manager | Cutout result |
+| :---: | :---: |
+| <img src="images/1.png" width="320" alt="Home page with Android model manager" /> | <img src="images/2.png" width="320" alt="Cutout result with cropToSubject and writeToCache toggles" /> |
+
 It is built on top of:
 
 - **iOS**: Vision Framework (`VNGenerateForegroundInstanceMaskRequest`)
