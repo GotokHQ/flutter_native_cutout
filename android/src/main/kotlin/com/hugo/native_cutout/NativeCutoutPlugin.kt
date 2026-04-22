@@ -5,35 +5,93 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
 import androidx.exifinterface.media.ExifInterface
+import com.google.android.gms.common.moduleinstall.InstallStatusListener
 import com.google.android.gms.common.moduleinstall.ModuleInstall
 import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
+import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate
+import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate.InstallState
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
 import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import android.os.Handler
+import android.os.Looper
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.FloatBuffer
+import java.util.UUID
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
-class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler {
+class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHandler {
     private lateinit var channel: MethodChannel
+    private lateinit var progressChannel: EventChannel
     private lateinit var context: android.content.Context
+    private var progressSink: EventChannel.EventSink? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val workerExecutor = Executors.newSingleThreadExecutor()
+
+    private fun postSuccess(result: Result, value: Any?) {
+        mainHandler.post { result.success(value) }
+    }
+
+    private fun postError(result: Result, code: String, message: String) {
+        mainHandler.post { result.error(code, message, null) }
+    }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "com.hugo/native_cutout")
         channel.setMethodCallHandler(this)
+        progressChannel = EventChannel(
+            flutterPluginBinding.binaryMessenger,
+            "com.hugo/native_cutout/download_progress"
+        )
+        progressChannel.setStreamHandler(this)
         context = flutterPluginBinding.applicationContext
+    }
+
+    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+        progressSink = events
+    }
+
+    override fun onCancel(arguments: Any?) {
+        progressSink = null
+    }
+
+    private fun emitProgress(update: ModuleInstallStatusUpdate) {
+        val sink = progressSink ?: return
+        val progress = update.progressInfo
+        val payload = mapOf(
+            "state" to stateToString(update.installState),
+            "bytesDownloaded" to (progress?.bytesDownloaded ?: 0L),
+            "totalBytes" to (progress?.totalBytesToDownload ?: 0L),
+            "errorCode" to update.errorCode,
+        )
+        mainHandler.post { sink.success(payload) }
+    }
+
+    private fun stateToString(state: Int): String = when (state) {
+        InstallState.STATE_PENDING -> "pending"
+        InstallState.STATE_DOWNLOADING -> "downloading"
+        InstallState.STATE_DOWNLOAD_PAUSED -> "downloadPaused"
+        InstallState.STATE_INSTALLING -> "installing"
+        InstallState.STATE_COMPLETED -> "completed"
+        InstallState.STATE_CANCELED -> "canceled"
+        InstallState.STATE_FAILED -> "failed"
+        else -> "unknown"
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
             "isModelAvailable" -> checkModelAvailability(result)
             "downloadModel" -> downloadModel(result)
+            "clearModel" -> clearModel(result)
+            "clearCache" -> clearCache(result)
             "removeBackground" -> {
                 val imagePath = call.argument<String>("imagePath")
                 if (imagePath == null) {
@@ -44,8 +102,9 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler {
                 @Suppress("UNCHECKED_CAST")
                 val options = call.argument<Map<String, Any>>("options") ?: emptyMap()
                 val cropToSubject = options["cropToSubject"] as? Boolean ?: false
+                val writeToCache = options["writeToCache"] as? Boolean ?: true
 
-                removeBackground(imagePath, cropToSubject, result)
+                removeBackground(imagePath, cropToSubject, writeToCache, result)
             }
             else -> result.notImplemented()
         }
@@ -66,103 +125,149 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler {
             }
     }
 
+    private fun clearCache(result: Result) {
+        workerExecutor.execute {
+            try {
+                val cacheDir = File(context.cacheDir, "native_cutout")
+                if (cacheDir.exists()) cacheDir.deleteRecursively()
+                postSuccess(result, true)
+            } catch (e: Exception) {
+                postError(result, "CACHE_CLEAR_FAILED", e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    private fun clearModel(result: Result) {
+        val segmenter = SubjectSegmentation.getClient(
+            SubjectSegmenterOptions.Builder().build()
+        )
+        val moduleInstallClient = ModuleInstall.getClient(context)
+
+        moduleInstallClient.releaseModules(segmenter)
+            .addOnSuccessListener {
+                result.success(true)
+            }
+            .addOnFailureListener { e ->
+                result.error("CLEAR_FAILED", "Failed to clear model: ${e.message}", null)
+            }
+    }
+
     private fun downloadModel(result: Result) {
         val segmenter = SubjectSegmentation.getClient(
             SubjectSegmenterOptions.Builder().build()
         )
         val moduleInstallClient = ModuleInstall.getClient(context)
 
+        val listener = InstallStatusListener { update -> emitProgress(update) }
+
         val moduleInstallRequest = ModuleInstallRequest.newBuilder()
             .addApi(segmenter)
+            .setListener(listener)
             .build()
 
         moduleInstallClient.installModules(moduleInstallRequest)
             .addOnSuccessListener {
+                moduleInstallClient.unregisterListener(listener)
                 result.success(true)
             }
             .addOnFailureListener { e ->
+                moduleInstallClient.unregisterListener(listener)
                 result.error("DOWNLOAD_FAILED", "Failed to download model: ${e.message}", null)
             }
     }
 
-    private fun removeBackground(imagePath: String, cropToSubject: Boolean, result: Result) {
-        // Load bitmap with EXIF orientation correction
-        val file = File(imagePath)
-        if (!file.exists()) {
-            result.error("INVALID_INPUT", "File does not exist: $imagePath", null)
-            return
-        }
+    private fun removeBackground(
+        imagePath: String,
+        cropToSubject: Boolean,
+        writeToCache: Boolean,
+        result: Result
+    ) {
+        workerExecutor.execute {
+            val file = File(imagePath)
+            if (!file.exists()) {
+                postError(result, "INVALID_INPUT", "File does not exist: $imagePath")
+                return@execute
+            }
 
-        val originalBitmap = BitmapFactory.decodeFile(imagePath)
-        if (originalBitmap == null) {
-            result.error("INVALID_INPUT", "Could not decode image: $imagePath", null)
-            return
-        }
+            val originalBitmap = BitmapFactory.decodeFile(imagePath)
+            if (originalBitmap == null) {
+                postError(result, "INVALID_INPUT", "Could not decode image: $imagePath")
+                return@execute
+            }
 
-        val bitmap = fixOrientation(imagePath, originalBitmap)
+            val bitmap = fixOrientation(imagePath, originalBitmap)
 
-        // Configure ML Kit Subject Segmentation
-        val options = SubjectSegmenterOptions.Builder()
-            .enableForegroundConfidenceMask()
-            .build()
+            val options = SubjectSegmenterOptions.Builder()
+                .enableForegroundConfidenceMask()
+                .build()
 
-        val segmenter = SubjectSegmentation.getClient(options)
-        val inputImage = InputImage.fromBitmap(bitmap, 0)
+            val segmenter = SubjectSegmentation.getClient(options)
+            val inputImage = InputImage.fromBitmap(bitmap, 0)
 
-        segmenter.process(inputImage)
-            .addOnSuccessListener { segmentationResult ->
-                val mask = segmentationResult.foregroundConfidenceMask
-                if (mask == null) {
-                    result.error("NO_SUBJECT", "No foreground mask generated", null)
+            segmenter.process(inputImage)
+                .addOnSuccessListener(workerExecutor) { segmentationResult ->
+                    val mask = segmentationResult.foregroundConfidenceMask
+                    if (mask == null) {
+                        bitmap.recycle()
+                        if (bitmap != originalBitmap) originalBitmap.recycle()
+                        postError(result, "NO_SUBJECT", "No foreground mask generated")
+                        return@addOnSuccessListener
+                    }
+
+                    val width = bitmap.width
+                    val height = bitmap.height
+
+                    mask.rewind()
+                    var hasSubject = false
+                    while (mask.hasRemaining()) {
+                        if (mask.get() > 0.1f) {
+                            hasSubject = true
+                            break
+                        }
+                    }
+
+                    if (!hasSubject) {
+                        bitmap.recycle()
+                        if (bitmap != originalBitmap) originalBitmap.recycle()
+                        postError(result, "NO_SUBJECT", "No foreground subject detected in image")
+                        return@addOnSuccessListener
+                    }
+
+                    val resultBitmap = applyMask(bitmap, mask, width, height, cropToSubject)
                     bitmap.recycle()
                     if (bitmap != originalBitmap) originalBitmap.recycle()
-                    return@addOnSuccessListener
-                }
 
-                // Mask dimensions match the input image dimensions
-                val width = bitmap.width
-                val height = bitmap.height
+                    if (resultBitmap == null) {
+                        postError(result, "PROCESSING_FAILED", "Failed to apply mask")
+                        return@addOnSuccessListener
+                    }
 
-                // Check if there's any foreground
-                mask.rewind()
-                var hasSubject = false
-                while (mask.hasRemaining()) {
-                    if (mask.get() > 0.1f) {
-                        hasSubject = true
-                        break
+                    if (writeToCache) {
+                        try {
+                            val cacheDir = File(context.cacheDir, "native_cutout").apply { mkdirs() }
+                            val outFile = File(cacheDir, "cutout_${UUID.randomUUID()}.png")
+                            outFile.outputStream().use { os ->
+                                resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
+                            }
+                            resultBitmap.recycle()
+                            postSuccess(result, outFile.absolutePath)
+                        } catch (e: Exception) {
+                            resultBitmap.recycle()
+                            postError(result, "PROCESSING_FAILED", "Failed to write PNG to cache: ${e.message}")
+                        }
+                    } else {
+                        val outputStream = ByteArrayOutputStream()
+                        resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+                        resultBitmap.recycle()
+                        postSuccess(result, outputStream.toByteArray())
                     }
                 }
-
-                if (!hasSubject) {
-                    result.error("NO_SUBJECT", "No foreground subject detected in image", null)
+                .addOnFailureListener(workerExecutor) { e ->
                     bitmap.recycle()
                     if (bitmap != originalBitmap) originalBitmap.recycle()
-                    return@addOnSuccessListener
+                    postError(result, "PROCESSING_FAILED", "Segmentation failed: ${e.message}")
                 }
-
-                // Apply mask to create transparent background
-                val resultBitmap = applyMask(bitmap, mask, width, height, cropToSubject)
-                bitmap.recycle()
-                if (bitmap != originalBitmap) originalBitmap.recycle()
-
-                if (resultBitmap == null) {
-                    result.error("PROCESSING_FAILED", "Failed to apply mask", null)
-                    return@addOnSuccessListener
-                }
-
-                // Convert to PNG bytes
-                val outputStream = ByteArrayOutputStream()
-                resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-                resultBitmap.recycle()
-
-                val pngBytes = outputStream.toByteArray()
-                result.success(pngBytes)
-            }
-            .addOnFailureListener { e ->
-                bitmap.recycle()
-                if (bitmap != originalBitmap) originalBitmap.recycle()
-                result.error("PROCESSING_FAILED", "Segmentation failed: ${e.message}", null)
-            }
+        }
     }
 
     private fun applyMask(
@@ -230,7 +335,10 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler {
 
         outputBitmap.setPixels(pixels, 0, width, 0, 0, width, height)
 
-        // Always crop to remove transparent pixels
+        if (!cropToSubject) {
+            return outputBitmap
+        }
+
         return if (maxX > minX && maxY > minY) {
             val cropWidth = maxX - minX + 1
             val cropHeight = maxY - minY + 1
@@ -276,5 +384,8 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+        progressChannel.setStreamHandler(null)
+        progressSink = null
+        workerExecutor.shutdown()
     }
 }

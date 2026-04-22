@@ -36,4 +36,24 @@ abstract class NativeCutoutPlatform extends PlatformInterface {
   Future<bool> downloadModel() {
     throw UnimplementedError('downloadModel() has not been implemented.');
   }
+
+  /// Requests release of the downloaded Android ML model.
+  ///
+  /// This is a best-effort request delegated to Google Play services and does
+  /// not guarantee immediate removal. No-op on iOS.
+  Future<bool> clearModel() {
+    throw UnimplementedError('clearModel() has not been implemented.');
+  }
+
+  /// Clears cached PNG files written by [removeBackground] when
+  /// `writeToCache` was enabled.
+  Future<bool> clearCache() {
+    throw UnimplementedError('clearCache() has not been implemented.');
+  }
+
+  /// Download progress events for the Android ML model.
+  /// Always empty on iOS.
+  Stream<ModelDownloadProgress> get downloadProgress {
+    throw UnimplementedError('downloadProgress has not been implemented.');
+  }
 }

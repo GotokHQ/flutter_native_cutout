@@ -11,28 +11,30 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
   @visibleForTesting
   final methodChannel = const MethodChannel('com.hugo/native_cutout');
 
+  @visibleForTesting
+  final progressEventChannel = const EventChannel(
+    'com.hugo/native_cutout/download_progress',
+  );
+
   @override
   Future<CutoutResult> removeBackground(
     String imagePath, {
     required CutoutOptions options,
   }) async {
     try {
-      final result = await methodChannel.invokeMethod<Uint8List>(
+      final result = await methodChannel.invokeMethod<Object>(
         'removeBackground',
-        {
-          'imagePath': imagePath,
-          'options': options.toMap(),
-        },
+        {'imagePath': imagePath, 'options': options.toMap()},
       );
 
-      if (result == null) {
-        return const CutoutFailure(
+      return switch (result) {
+        String path => CutoutFileSuccess(path),
+        Uint8List bytes => CutoutBytesSuccess(bytes),
+        _ => const CutoutFailure(
           CutoutErrorCode.processingFailed,
           'No result returned from native code',
-        );
-      }
-
-      return CutoutSuccess(result);
+        ),
+      };
     } on PlatformException catch (e) {
       final code = _parseErrorCode(e.code);
       return CutoutFailure(code, e.message ?? 'Unknown error');
@@ -72,4 +74,52 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
       return false;
     }
   }
+
+  @override
+  Future<bool> clearModel() async {
+    // iOS Vision framework is built-in, no downloaded module to clear.
+    if (Platform.isIOS) return true;
+
+    try {
+      final result = await methodChannel.invokeMethod<bool>('clearModel');
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> clearCache() async {
+    try {
+      final result = await methodChannel.invokeMethod<bool>('clearCache');
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  @override
+  Stream<ModelDownloadProgress> get downloadProgress {
+    if (Platform.isIOS) return const Stream.empty();
+    return progressEventChannel.receiveBroadcastStream().map((event) {
+      final map = (event as Map).cast<Object?, Object?>();
+      return ModelDownloadProgress(
+        state: _parseState(map['state'] as String?),
+        bytesDownloaded: (map['bytesDownloaded'] as num?)?.toInt() ?? 0,
+        totalBytes: (map['totalBytes'] as num?)?.toInt() ?? 0,
+        errorCode: (map['errorCode'] as num?)?.toInt(),
+      );
+    });
+  }
+
+  ModelInstallState _parseState(String? s) => switch (s) {
+    'pending' => ModelInstallState.pending,
+    'downloading' => ModelInstallState.downloading,
+    'downloadPaused' => ModelInstallState.downloadPaused,
+    'installing' => ModelInstallState.installing,
+    'completed' => ModelInstallState.completed,
+    'canceled' => ModelInstallState.canceled,
+    'failed' => ModelInstallState.failed,
+    _ => ModelInstallState.unknown,
+  };
 }

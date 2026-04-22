@@ -22,15 +22,56 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
 
             let options = args["options"] as? [String: Any] ?? [:]
             let cropToSubject = options["cropToSubject"] as? Bool ?? false
+            let writeToCache = options["writeToCache"] as? Bool ?? true
 
-            removeBackground(imagePath: imagePath, cropToSubject: cropToSubject, result: result)
+            removeBackground(
+                imagePath: imagePath,
+                cropToSubject: cropToSubject,
+                writeToCache: writeToCache,
+                result: result
+            )
+
+        case "clearCache":
+            clearCache(result: result)
 
         default:
             result(FlutterMethodNotImplemented)
         }
     }
 
-    private func removeBackground(imagePath: String, cropToSubject: Bool, result: @escaping FlutterResult) {
+    private func cacheDirectory() -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return base.appendingPathComponent("native_cutout", isDirectory: true)
+    }
+
+    private func clearCache(result: @escaping FlutterResult) {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            let dir = self.cacheDirectory()
+            do {
+                if fm.fileExists(atPath: dir.path) {
+                    try fm.removeItem(at: dir)
+                }
+                DispatchQueue.main.async { result(true) }
+            } catch {
+                DispatchQueue.main.async {
+                    result(FlutterError(
+                        code: "CACHE_CLEAR_FAILED",
+                        message: error.localizedDescription,
+                        details: nil
+                    ))
+                }
+            }
+        }
+    }
+
+    private func removeBackground(
+        imagePath: String,
+        cropToSubject: Bool,
+        writeToCache: Bool,
+        result: @escaping FlutterResult
+    ) {
         // Check if running on simulator - Neural Engine not available
         #if targetEnvironment(simulator)
         result(FlutterError(
@@ -85,9 +126,10 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
                 let maskPixelBuffer = try observation.generateScaledMaskForImage(forInstances: allInstances, from: handler)
 
                 // Apply mask directly to create cutout image
-                guard let cutoutImage = self.applyMaskAndTrim(
+                guard let cutoutImage = self.applyMask(
                     sourceImage: cgImage,
-                    maskBuffer: maskPixelBuffer
+                    maskBuffer: maskPixelBuffer,
+                    cropToSubject: cropToSubject
                 ) else {
                     DispatchQueue.main.async {
                         result(FlutterError(code: "PROCESSING_FAILED", message: "Could not apply mask", details: nil))
@@ -104,8 +146,29 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
                     return
                 }
 
-                DispatchQueue.main.async {
-                    result(FlutterStandardTypedData(bytes: pngData))
+                if writeToCache {
+                    do {
+                        let dir = self.cacheDirectory()
+                        try FileManager.default.createDirectory(
+                            at: dir,
+                            withIntermediateDirectories: true
+                        )
+                        let fileUrl = dir.appendingPathComponent("cutout_\(UUID().uuidString).png")
+                        try pngData.write(to: fileUrl, options: .atomic)
+                        DispatchQueue.main.async { result(fileUrl.path) }
+                    } catch {
+                        DispatchQueue.main.async {
+                            result(FlutterError(
+                                code: "PROCESSING_FAILED",
+                                message: "Failed to write PNG to cache: \(error.localizedDescription)",
+                                details: nil
+                            ))
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        result(FlutterStandardTypedData(bytes: pngData))
+                    }
                 }
 
             } catch {
@@ -128,8 +191,8 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
         return normalizedImage
     }
 
-    /// Applies mask to source image and trims transparent pixels
-    private func applyMaskAndTrim(sourceImage: CGImage, maskBuffer: CVPixelBuffer) -> CGImage? {
+    /// Applies mask to source image and optionally trims transparent pixels.
+    private func applyMask(sourceImage: CGImage, maskBuffer: CVPixelBuffer, cropToSubject: Bool) -> CGImage? {
         // First, create masked image using CIFilter (reliable blending)
         let maskCIImage = CIImage(cvPixelBuffer: maskBuffer)
         let sourceCIImage = CIImage(cgImage: sourceImage)
@@ -153,7 +216,11 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
             return nil
         }
 
-        // Now trim transparent pixels using vImage
+        guard cropToSubject else {
+            return maskedImage
+        }
+
+        // Trim transparent pixels using vImage when requested.
         return trimTransparentPixelsWithVImage(maskedImage)
     }
 
