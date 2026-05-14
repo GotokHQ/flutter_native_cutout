@@ -24,6 +24,15 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
             let cropToSubject = options["cropToSubject"] as? Bool ?? false
             let writeToCache = options["writeToCache"] as? Bool ?? true
 
+            guard #available(iOS 17.0, *) else {
+                result(FlutterError(
+                    code: "UNSUPPORTED_OS",
+                    message: "Background removal requires iOS 17 or later",
+                    details: nil
+                ))
+                return
+            }
+
             removeBackground(
                 imagePath: imagePath,
                 cropToSubject: cropToSubject,
@@ -66,6 +75,7 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    @available(iOS 17.0, *)
     private func removeBackground(
         imagePath: String,
         cropToSubject: Bool,

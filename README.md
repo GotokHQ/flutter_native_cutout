@@ -5,6 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platform](https://img.shields.io/badge/platform-android%20%7C%20ios-blue.svg)](https://pub.dev/packages/native_cutout)
 
+English | [简体中文](README.zh-CN.md)
+
 Native background removal for Flutter using platform image segmentation APIs.
 
 `native_cutout` removes the background from a local image file and produces a transparent PNG — fully on-device, with no external API, no upload step, and no API keys.
@@ -34,13 +36,13 @@ It is built on top of:
 
 | Platform | Engine | Minimum version | Notes |
 | --- | --- | --- | --- |
-| iOS | Vision Framework | iOS 17.0 | Requires a **real device** for actual processing |
-| Android | ML Kit Subject Segmentation | API 21+ | First use may require model download via Google Play Services |
+| iOS | Vision Framework | iOS 13.0 (compile) / iOS 17.0 (runtime) | Requires a **real device** for actual processing |
+| Android | ML Kit Subject Segmentation | API 21+ | Segmentation model is downloaded by Google Play services on demand |
 
 > **Important**
 >
 > - On **iOS Simulator**, foreground extraction is not available. Use a real iPhone or iPad.
-> - On **Android**, the ML Kit model may not be available on first launch. You can check availability and trigger a download before processing.
+> - On **Android**, the ML Kit model is **not bundled** in your APK. If it isn't already on the device, the first call to `removeBackground` will trigger an implicit download via Google Play services — that first call will block until the download completes and will fail when the device is offline. See [Android setup](#android-setup) for the recommended explicit warm-up flow.
 
 ## Installation
 
@@ -59,15 +61,12 @@ flutter pub get
 
 ## iOS setup
 
-This plugin relies on APIs that require **iOS 17.0+**.
+The plugin compiles against **iOS 13.0+** (Flutter's default), so it will not
+raise your app's deployment target. At **runtime** the background-removal API
+(`VNGenerateForegroundInstanceMaskRequest`) requires **iOS 17.0+** — on older
+versions `removeBackground` returns the error code `UNSUPPORTED_OS`.
 
-Update your app's `ios/Podfile`:
-
-```ruby
-platform :ios, '17.0'
-```
-
-Then install pods as usual:
+No `Podfile` changes are required. Just run pods as usual:
 
 ```bash
 cd ios && pod install
@@ -75,11 +74,35 @@ cd ios && pod install
 
 ## Android setup
 
-No manual manifest setup is required for the plugin itself.
+The plugin supports **Android API 21+** and requires no manual `AndroidManifest.xml` changes.
 
-The plugin supports **Android API 21+**. On some devices, the ML Kit segmentation module may need to be downloaded before the first successful cutout.
+### How the ML Kit model is delivered
 
-For testing, the plugin also exposes a best-effort `clearModel()` API on Android to request release of the downloaded module.
+This plugin uses the **unbundled** variant of ML Kit Subject Segmentation
+(`play-services-mlkit-subject-segmentation`). The segmentation model is **not**
+shipped inside your APK — it is delivered by Google Play services and lives
+outside your app. There are two ways the model gets onto the device:
+
+1. **Implicit download (default, lazy)** — the first call to
+   `NativeCutout.removeBackground` on a device that does not yet have the model
+   triggers an internal download inside ML Kit. The `removeBackground` future
+   will not complete until the download finishes, which means:
+   - The very first cutout on a fresh install will take noticeably longer
+   - It will fail when the device is offline (typical error: `processingFailed`)
+   - There is **no progress callback** during this implicit download — your UI
+     can only show an indeterminate spinner
+
+2. **Explicit warm-up (recommended)** — call `NativeCutout.downloadModel()`
+   ahead of time (e.g. on app launch, or the first time the user opens the
+   editor). This path streams progress through `NativeCutout.downloadProgress`,
+   lets you render a real download UI, and removes the first-cutout latency
+   spike.
+
+See the [Recommended Android warm-up flow](#recommended-android-warm-up-flow)
+below for code.
+
+For testing, `NativeCutout.clearModel()` requests Google Play services to
+release the downloaded module so you can re-exercise the first-download path.
 
 ## Quick start
 
@@ -326,7 +349,7 @@ For the highest-quality cutout:
 
 - Input must be a **local file path**
 - iOS processing requires **iOS 17+** and a **real device**
-- Android may require an **initial model download**
+- Android requires Google Play services and an **initial model download** (implicit on first use, or explicit via `downloadModel()`); the first call is **offline-unfriendly** if the model isn't already cached
 - The quality of the result depends on the platform segmentation engine and source image quality
 
 ## Example app

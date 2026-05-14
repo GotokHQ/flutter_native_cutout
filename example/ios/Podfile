@@ -1,5 +1,6 @@
-# Set platform to iOS 17.0 for Vision Framework support
-platform :ios, '17.0'
+# Background removal needs iOS 17 at runtime, but the plugin compiles against
+# iOS 13 so it does not raise consumers' deployment targets.
+platform :ios, '13.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'

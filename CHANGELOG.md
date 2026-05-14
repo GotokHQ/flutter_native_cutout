@@ -1,3 +1,10 @@
+## 0.2.0
+
+* Lowered the iOS pod platform from 17.0 to 13.0 so consuming apps no longer need to raise their deployment target. Background removal still requires iOS 17 at runtime and now returns the `UNSUPPORTED_OS` error on older systems.
+* Clarified Android ML Kit model delivery in the README: the segmentation model is not bundled and is downloaded by Google Play services on demand. First call to `removeBackground` will implicitly download the model when missing.
+* Added Simplified Chinese translation (`README.zh-CN.md`) and a language switcher in the English README.
+* Updated pubspec description to surface on-device processing, iOS 17 runtime requirement, and on-demand ML Kit model download.
+
 ## 0.1.0
 
 * Initial release of the native Flutter background-removal plugin.
