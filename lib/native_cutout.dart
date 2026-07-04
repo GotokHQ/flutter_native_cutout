@@ -28,14 +28,30 @@ class CutoutOptions {
   /// cache path unless you specifically need bytes in Dart.
   final bool writeToCache;
 
+  /// Soft-edge feather applied to the alpha matte, in pixels.
+  ///
+  /// A small value (1-2) smooths the cutout edge to reduce jaggies/halos.
+  /// `0` (default) leaves the platform matte untouched.
+  final double featherRadius;
+
+  /// Erodes (shrinks) the alpha matte by this many pixels before compositing.
+  ///
+  /// Useful to remove a 1px background-color fringe left by the segmenter.
+  /// `0` (default) disables erosion.
+  final int edgeErode;
+
   const CutoutOptions({
     this.cropToSubject = false,
     this.writeToCache = true,
+    this.featherRadius = 0,
+    this.edgeErode = 0,
   });
 
   Map<String, dynamic> toMap() => {
     'cropToSubject': cropToSubject,
     'writeToCache': writeToCache,
+    'featherRadius': featherRadius,
+    'edgeErode': edgeErode,
   };
 }
 

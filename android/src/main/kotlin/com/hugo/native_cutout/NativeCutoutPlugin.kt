@@ -2,8 +2,11 @@ package com.hugo.native_cutout
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Color
+import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import androidx.exifinterface.media.ExifInterface
 import com.google.android.gms.common.moduleinstall.InstallStatusListener
 import com.google.android.gms.common.moduleinstall.ModuleInstall
@@ -103,8 +106,17 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
                 val options = call.argument<Map<String, Any>>("options") ?: emptyMap()
                 val cropToSubject = options["cropToSubject"] as? Boolean ?: false
                 val writeToCache = options["writeToCache"] as? Boolean ?: true
+                val featherRadius = (options["featherRadius"] as? Number)?.toFloat() ?: 0f
+                val edgeErode = (options["edgeErode"] as? Number)?.toInt() ?: 0
 
-                removeBackground(imagePath, cropToSubject, writeToCache, result)
+                removeBackground(
+                    imagePath,
+                    cropToSubject,
+                    writeToCache,
+                    featherRadius,
+                    edgeErode,
+                    result
+                )
             }
             else -> result.notImplemented()
         }
@@ -180,6 +192,8 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         imagePath: String,
         cropToSubject: Boolean,
         writeToCache: Boolean,
+        featherRadius: Float,
+        edgeErode: Int,
         result: Result
     ) {
         workerExecutor.execute {
@@ -233,7 +247,15 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
                         return@addOnSuccessListener
                     }
 
-                    val resultBitmap = applyMask(bitmap, mask, width, height, cropToSubject)
+                    val resultBitmap = applyMask(
+                        bitmap,
+                        mask,
+                        width,
+                        height,
+                        cropToSubject,
+                        featherRadius,
+                        edgeErode
+                    )
                     bitmap.recycle()
                     if (bitmap != originalBitmap) originalBitmap.recycle()
 
@@ -275,78 +297,150 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         mask: FloatBuffer,
         maskWidth: Int,
         maskHeight: Int,
-        cropToSubject: Boolean
+        cropToSubject: Boolean,
+        featherRadius: Float,
+        edgeErode: Int
     ): Bitmap? {
         val width = bitmap.width
         val height = bitmap.height
 
-        // Create output bitmap with alpha channel
-        val outputBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-
-        // Calculate scaling factors between mask and image
-        val scaleX = maskWidth.toFloat() / width
-        val scaleY = maskHeight.toFloat() / height
-
-        // Track bounds for cropping
-        var minX = width
-        var minY = height
-        var maxX = 0
-        var maxY = 0
-
-        // Get pixels from source
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        // Apply mask
+        // Read the confidence mask into a float array.
         mask.rewind()
         val maskArray = FloatArray(maskWidth * maskHeight)
         mask.get(maskArray)
 
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                // Map image coordinates to mask coordinates
-                val maskX = (x * scaleX).roundToInt().coerceIn(0, maskWidth - 1)
-                val maskY = (y * scaleY).roundToInt().coerceIn(0, maskHeight - 1)
-                val maskIndex = maskY * maskWidth + maskX
+        // Optional edge refinement on the confidence values (separable filters).
+        if (edgeErode > 0) {
+            erodeMask(maskArray, maskWidth, maskHeight, edgeErode)
+        }
+        if (featherRadius > 0f) {
+            blurMask(maskArray, maskWidth, maskHeight, featherRadius.roundToInt().coerceAtLeast(1))
+        }
 
-                val confidence = maskArray[maskIndex]
-                val pixelIndex = y * width + x
-                val pixel = pixels[pixelIndex]
-
-                // Apply alpha based on confidence
-                val alpha = (confidence * 255).roundToInt().coerceIn(0, 255)
-
-                if (alpha > 0) {
-                    val r = Color.red(pixel)
-                    val g = Color.green(pixel)
-                    val b = Color.blue(pixel)
-                    pixels[pixelIndex] = Color.argb(alpha, r, g, b)
-
-                    // Update bounds
-                    if (x < minX) minX = x
-                    if (y < minY) minY = y
-                    if (x > maxX) maxX = x
-                    if (y > maxY) maxY = y
-                } else {
-                    pixels[pixelIndex] = Color.TRANSPARENT
-                }
+        // Build an ARGB mask bitmap whose alpha carries the confidence, while
+        // tracking subject bounds for optional cropping.
+        var minX = maskWidth
+        var minY = maskHeight
+        var maxX = 0
+        var maxY = 0
+        var hasSubject = false
+        val maskPixels = IntArray(maskWidth * maskHeight)
+        for (i in maskArray.indices) {
+            val alpha = (maskArray[i] * 255f).roundToInt().coerceIn(0, 255)
+            maskPixels[i] = alpha shl 24
+            if (alpha > 10) {
+                hasSubject = true
+                val x = i % maskWidth
+                val y = i / maskWidth
+                if (x < minX) minX = x
+                if (y < minY) minY = y
+                if (x > maxX) maxX = x
+                if (y > maxY) maxY = y
             }
         }
 
-        outputBitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        if (!hasSubject) return null
 
-        if (!cropToSubject) {
-            return outputBitmap
+        val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ARGB_8888)
+        maskBitmap.setPixels(maskPixels, 0, maskWidth, 0, 0, maskWidth, maskHeight)
+
+        // Scale the mask to the source size with bilinear filtering for smooth,
+        // anti-aliased edges (vs. the previous nearest-neighbor sampling).
+        val scaledMask = if (maskWidth == width && maskHeight == height) {
+            maskBitmap
+        } else {
+            Bitmap.createScaledBitmap(maskBitmap, width, height, true).also {
+                maskBitmap.recycle()
+            }
         }
 
-        return if (maxX > minX && maxY > minY) {
-            val cropWidth = maxX - minX + 1
-            val cropHeight = maxY - minY + 1
-            val croppedBitmap = Bitmap.createBitmap(outputBitmap, minX, minY, cropWidth, cropHeight)
-            outputBitmap.recycle()
-            croppedBitmap
+        // Composite: keep the source pixels only where the mask is opaque.
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            isFilterBitmap = true
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+        }
+        canvas.drawBitmap(scaledMask, 0f, 0f, paint)
+        scaledMask.recycle()
+
+        if (!cropToSubject) {
+            return output
+        }
+
+        // Map mask-space bounds to image space and crop.
+        val sx = width.toFloat() / maskWidth
+        val sy = height.toFloat() / maskHeight
+        val cropL = (minX * sx).toInt().coerceIn(0, width - 1)
+        val cropT = (minY * sy).toInt().coerceIn(0, height - 1)
+        val cropR = ((maxX + 1) * sx).roundToInt().coerceIn(cropL + 1, width)
+        val cropB = ((maxY + 1) * sy).roundToInt().coerceIn(cropT + 1, height)
+        val cropW = cropR - cropL
+        val cropH = cropB - cropT
+        return if (cropW > 0 && cropH > 0) {
+            val cropped = Bitmap.createBitmap(output, cropL, cropT, cropW, cropH)
+            output.recycle()
+            cropped
         } else {
-            outputBitmap
+            output
+        }
+    }
+
+    /// Separable min-filter (erosion) on a single-channel mask in [0,1].
+    /// Shrinks the subject slightly to remove a thin background fringe.
+    private fun erodeMask(data: FloatArray, w: Int, h: Int, radius: Int) {
+        if (radius <= 0) return
+        val tmp = FloatArray(data.size)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                var m = 1f
+                val from = (x - radius).coerceAtLeast(0)
+                val to = (x + radius).coerceAtMost(w - 1)
+                for (k in from..to) {
+                    val v = data[row + k]
+                    if (v < m) m = v
+                }
+                tmp[row + x] = m
+            }
+        }
+        for (x in 0 until w) {
+            for (y in 0 until h) {
+                var m = 1f
+                val from = (y - radius).coerceAtLeast(0)
+                val to = (y + radius).coerceAtMost(h - 1)
+                for (k in from..to) {
+                    val v = tmp[k * w + x]
+                    if (v < m) m = v
+                }
+                data[y * w + x] = m
+            }
+        }
+    }
+
+    /// Separable box blur (feather) on a single-channel mask in [0,1].
+    private fun blurMask(data: FloatArray, w: Int, h: Int, radius: Int) {
+        if (radius <= 0) return
+        val tmp = FloatArray(data.size)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                var sum = 0f
+                val from = (x - radius).coerceAtLeast(0)
+                val to = (x + radius).coerceAtMost(w - 1)
+                for (k in from..to) sum += data[row + k]
+                tmp[row + x] = sum / (to - from + 1)
+            }
+        }
+        for (x in 0 until w) {
+            for (y in 0 until h) {
+                var sum = 0f
+                val from = (y - radius).coerceAtLeast(0)
+                val to = (y + radius).coerceAtMost(h - 1)
+                for (k in from..to) sum += tmp[k * w + x]
+                data[y * w + x] = sum / (to - from + 1)
+            }
         }
     }
 

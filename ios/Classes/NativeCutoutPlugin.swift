@@ -23,6 +23,8 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
             let options = args["options"] as? [String: Any] ?? [:]
             let cropToSubject = options["cropToSubject"] as? Bool ?? false
             let writeToCache = options["writeToCache"] as? Bool ?? true
+            let featherRadius = (options["featherRadius"] as? NSNumber)?.doubleValue ?? 0
+            let edgeErode = (options["edgeErode"] as? NSNumber)?.intValue ?? 0
 
             guard #available(iOS 17.0, *) else {
                 result(FlutterError(
@@ -37,6 +39,8 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
                 imagePath: imagePath,
                 cropToSubject: cropToSubject,
                 writeToCache: writeToCache,
+                featherRadius: featherRadius,
+                edgeErode: edgeErode,
                 result: result
             )
 
@@ -80,6 +84,8 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
         imagePath: String,
         cropToSubject: Bool,
         writeToCache: Bool,
+        featherRadius: Double,
+        edgeErode: Int,
         result: @escaping FlutterResult
     ) {
         // Check if running on simulator - Neural Engine not available
@@ -139,7 +145,9 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
                 guard let cutoutImage = self.applyMask(
                     sourceImage: cgImage,
                     maskBuffer: maskPixelBuffer,
-                    cropToSubject: cropToSubject
+                    cropToSubject: cropToSubject,
+                    featherRadius: featherRadius,
+                    edgeErode: edgeErode
                 ) else {
                     DispatchQueue.main.async {
                         result(FlutterError(code: "PROCESSING_FAILED", message: "Could not apply mask", details: nil))
@@ -201,10 +209,47 @@ public class NativeCutoutPlugin: NSObject, FlutterPlugin {
         return normalizedImage
     }
 
+    /// Refines the alpha matte: optional erosion to remove a thin background
+    /// fringe, then an optional Gaussian feather for a clean, soft edge.
+    private func refineMask(_ mask: CIImage, edgeErode: Int, featherRadius: Double) -> CIImage {
+        var refined = mask
+        let extent = mask.extent
+
+        if edgeErode > 0, let erode = CIFilter(name: "CIMorphologyMinimum") {
+            erode.setValue(refined, forKey: kCIInputImageKey)
+            erode.setValue(Double(edgeErode), forKey: "inputRadius")
+            if let out = erode.outputImage {
+                refined = out.cropped(to: extent)
+            }
+        }
+
+        if featherRadius > 0, let blur = CIFilter(name: "CIGaussianBlur") {
+            // Clamp first so the blur doesn't fade the matte at the image border.
+            blur.setValue(refined.clampedToExtent(), forKey: kCIInputImageKey)
+            blur.setValue(featherRadius, forKey: "inputRadius")
+            if let out = blur.outputImage {
+                refined = out.cropped(to: extent)
+            }
+        }
+
+        return refined
+    }
+
     /// Applies mask to source image and optionally trims transparent pixels.
-    private func applyMask(sourceImage: CGImage, maskBuffer: CVPixelBuffer, cropToSubject: Bool) -> CGImage? {
+    private func applyMask(
+        sourceImage: CGImage,
+        maskBuffer: CVPixelBuffer,
+        cropToSubject: Bool,
+        featherRadius: Double = 0,
+        edgeErode: Int = 0
+    ) -> CGImage? {
         // First, create masked image using CIFilter (reliable blending)
-        let maskCIImage = CIImage(cvPixelBuffer: maskBuffer)
+        let rawMaskCIImage = CIImage(cvPixelBuffer: maskBuffer)
+        let maskCIImage = refineMask(
+            rawMaskCIImage,
+            edgeErode: edgeErode,
+            featherRadius: featherRadius
+        )
         let sourceCIImage = CIImage(cgImage: sourceImage)
         let transparentBackground = CIImage.empty()
 

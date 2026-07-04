@@ -1,3 +1,9 @@
+## 0.2.1 (GotokHQ fork)
+
+* Added `CutoutOptions.featherRadius` and `CutoutOptions.edgeErode` for higher-fidelity matte edges (both default to `0`, preserving previous behavior).
+* iOS: refine the Vision matte with Core Image `CIMorphologyMinimum` (erode) and `CIGaussianBlur` (feather) before compositing.
+* Android: replaced the per-pixel mask loop with separable erode/feather + bilinear mask upscale + a `PorterDuff.DST_IN` Canvas composite (smoother edges and faster on large images).
+
 ## 0.2.0
 
 * Lowered the iOS pod platform from 17.0 to 13.0 so consuming apps no longer need to raise their deployment target. Background removal still requires iOS 17 at runtime and now returns the `UNSUPPORTED_OS` error on older systems.
