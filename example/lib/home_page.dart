@@ -10,8 +10,7 @@ import 'package:native_cutout/native_cutout.dart';
 import 'cutout_page.dart';
 
 const String _sampleAsset = 'assets/cat.jpg';
-const String _modelDocUrl =
-    'https://developers.google.com/ml-kit/vision/subject-segmentation';
+const String _modelDocUrl = 'https://huggingface.co/Heliosoph/u2net-onnx';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -71,9 +70,7 @@ class _HomePageState extends State<HomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          success
-              ? 'Model downloaded successfully'
-              : 'Failed to download model',
+          success ? 'Model warmed up successfully' : 'Failed to warm up model',
         ),
         backgroundColor: success ? Colors.green : Colors.red,
       ),
@@ -97,15 +94,9 @@ class _HomePageState extends State<HomePage> {
     setState(() => _isClearingModel = false);
 
     final (message, color) = switch ((requested, stillAvailable)) {
-      (false, _) => ('Failed to request model release', Colors.red),
-      (true, false) => (
-        'Model cleared. You can test the download flow again.',
-        Colors.green,
-      ),
-      (true, true) => (
-        'Release requested. Google Play Services may keep the model for a while.',
-        Colors.orange,
-      ),
+      (false, _) => ('Failed to clear model resources', Colors.red),
+      (true, false) => ('Model resources cleared.', Colors.green),
+      (true, true) => ('Bundled model remains available.', Colors.green),
     };
 
     ScaffoldMessenger.of(
@@ -216,21 +207,21 @@ class _ModelManagerCard extends StatelessWidget {
           children: [
             Icon(
               isDownloading
-                  ? Icons.cloud_download
+                  ? Icons.hourglass_top
                   : isClearing
                   ? Icons.delete_outline
                   : isModelAvailable == true
                   ? Icons.verified
-                  : Icons.download,
+                  : Icons.check_circle_outline,
               size: 48,
               color: scheme.onTertiaryContainer,
             ),
             const SizedBox(height: 8),
             Text(
               isDownloading
-                  ? 'Downloading model...'
+                  ? 'Warming up model...'
                   : isClearing
-                  ? 'Releasing model...'
+                  ? 'Clearing model resources...'
                   : 'Android model manager',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -262,8 +253,8 @@ class _ModelManagerCard extends StatelessWidget {
                             height: 16,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Icon(Icons.download),
-                    label: Text(isDownloading ? 'Downloading' : 'Download model'),
+                        : const Icon(Icons.play_arrow),
+                    label: Text(isDownloading ? 'Warming up' : 'Warm up model'),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -282,7 +273,7 @@ class _ModelManagerCard extends StatelessWidget {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.delete_outline),
-                    label: Text(isClearing ? 'Releasing' : 'Release model'),
+                    label: Text(isClearing ? 'Clearing' : 'Clear resources'),
                   ),
                 ),
               ],
@@ -329,10 +320,10 @@ class _IntroDetails extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _InfoRow(label: 'Source', value: 'Google Play Services', color: textColor),
+        _InfoRow(label: 'Source', value: 'Bundled app asset', color: textColor),
         _InfoRow(
           label: 'Model',
-          value: 'ML Kit Subject Segmentation',
+          value: 'U2-Net light (u2netp)',
           color: textColor,
         ),
         const SizedBox(height: 8),
@@ -340,9 +331,9 @@ class _IntroDetails extends StatelessWidget {
           onLongPress: () async {
             await Clipboard.setData(const ClipboardData(text: _modelDocUrl));
             if (!context.mounted) return;
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(const SnackBar(content: Text('Documentation link copied')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Documentation link copied')),
+            );
           },
           child: Text(
             _modelDocUrl,
@@ -358,8 +349,8 @@ class _IntroDetails extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           isModelAvailable == true
-              ? 'Model is available. Tap "Release model" to test the first-download flow again. Long-press the link above to copy it.'
-              : 'On first use the model is downloaded from Google Play Services and cached locally. Long-press the link above to copy it.',
+              ? 'Model is bundled and available offline. Long-press the link above to copy it.'
+              : 'Warm-up checks the bundled model/runtime before processing. Long-press the link above to copy it.',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: textColor.withValues(alpha: 0.8),
@@ -369,8 +360,8 @@ class _IntroDetails extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           isModelAvailable == true
-              ? '⚠️ Releasing is a best-effort request; Google Play Services may keep the model for a while.'
-              : '💡 Requires an internet connection',
+              ? 'No network or Google Play services module is required.'
+              : 'The model ships inside the app package.',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: textColor.withValues(alpha: 0.7),
@@ -391,8 +382,8 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (label, color) = switch (isModelAvailable) {
-      true => ('Installed', Colors.green),
-      false => ('Not installed', scheme.error),
+      true => ('Available', Colors.green),
+      false => ('Unavailable', scheme.error),
       null => ('Checking', scheme.onTertiaryContainer),
     };
     return Center(
@@ -439,7 +430,7 @@ class _ProgressDetails extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         Text(
-          '⚠️ Keep the network connected and stay in the app',
+          'Bundled model warm-up completes locally',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: scheme.error,

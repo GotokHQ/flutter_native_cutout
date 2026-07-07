@@ -18,7 +18,7 @@
 底层依赖：
 
 - **iOS**：Vision Framework（`VNGenerateForegroundInstanceMaskRequest`）
-- **Android**：Google ML Kit Subject Segmentation
+- **Android**：随包内置的 U2-Net light 模型，通过 Android 原生推理运行时执行
 
 ## 功能特性
 
@@ -29,7 +29,7 @@
 - 分割前自动修正 **EXIF 方向**
 - 可选「贴合主体」裁剪 `CutoutOptions.cropToSubject`
 - `clearCache()` 清理缓存
-- Android 提供模型生命周期 API：可用性查询、下载、下载进度、清除
+- Android 保留模型生命周期 API 以兼容旧代码（模型随包内置，无需网络下载）
 - 简洁的 Dart API，结果类型严格区分成功 / 失败
 
 ## 平台支持
@@ -37,12 +37,12 @@
 | 平台 | 引擎 | 最低版本 | 备注 |
 | --- | --- | --- | --- |
 | iOS | Vision Framework | iOS 13.0（编译）/ iOS 17.0（运行时） | 实际抠图需要**真机** |
-| Android | ML Kit Subject Segmentation | API 21+ | 分割模型由 Google Play Services 按需下发 |
+| Android | 内置 U2-Net light | API 21+ | 分割模型随 App 打包，无需 Google Play Services 下载 |
 
 > **重要提示**
 >
 > - **iOS 模拟器**不支持前景分割，请使用 iPhone / iPad 真机。
-> - **Android 端的 ML Kit 模型不会随 APK 一起打包**。如果设备本地没有该模型，首次调用 `removeBackground` 时会**隐式触发**一次模型下载 —— 这次调用会一直阻塞到下载完成，且**无网络时会失败**。建议参考下文 [Android 接入](#android-接入) 提前预热。
+> - **Android 端的 U2-Net light 模型会随 App 一起打包**。`removeBackground` 可离线工作，不依赖 Google Play services 的可选 ML 模块。
 
 ## 安装
 
@@ -75,27 +75,15 @@ cd ios && pod install
 
 插件支持 **Android API 21+**，**不需要**手动改 `AndroidManifest.xml`。
 
-### ML Kit 模型如何下发
+### Android 模型如何下发
 
-本插件使用 ML Kit Subject Segmentation 的 **unbundled（非内嵌）变体**
-（`play-services-mlkit-subject-segmentation`）。分割模型**不会**打进你的 APK，
-而是由 Google Play Services 在 App 之外管理、按需下发。模型有两种到达设备的路径：
+Android 模型以 `u2netp.onnx`（U2-Net light）的形式随插件打包。这里不再使用
+ML Kit / Google Play services 的可选模块，因此没有远程模型下载、加载或被系统清理的问题；
+安装后即可离线使用抠图能力。
 
-1. **隐式下载（默认 / 懒加载）** —— 当设备上还没有模型时，首次调用
-   `NativeCutout.removeBackground` 会在 ML Kit 内部**自动触发**一次模型下载。
-   在下载完成前，`removeBackground` 的 Future 不会返回，因此：
-   - 新装 App 的**第一次抠图**会明显变慢
-   - **离线时**这次调用会失败（常见错误码：`processingFailed`）
-   - 隐式下载过程中**没有进度回调**，UI 层只能展示一个不确定的 loading
-
-2. **显式预热（推荐）** —— 提前调用 `NativeCutout.downloadModel()`
-   （比如 App 启动时、或用户首次进入编辑器时）。这条路径会通过
-   `NativeCutout.downloadProgress` 推送进度，方便你做一个真正的下载 UI，
-   也能消除首次抠图的延迟尖刺。
-
-下面的 [Android 模型预热推荐流程](#android-模型预热推荐流程) 有完整示例代码。
-
-调试时可以用 `NativeCutout.clearModel()` 请求 Google Play Services 释放已下载的模型，从而重新走一遍首次下载流程。
+`NativeCutout.isModelAvailable()`、`NativeCutout.downloadModel()`、
+`NativeCutout.downloadProgress` 和 `NativeCutout.clearModel()` 仍然保留，
+便于兼容已有 App 代码；由于没有远程模型生命周期，它们都会立即完成。
 
 ## 快速开始
 
@@ -143,9 +131,9 @@ final result = await NativeCutout.removeBackground(
 );
 ```
 
-## Android 模型预热推荐流程
+## Android 模型预热兼容流程
 
-为了让 Android 端首次抠图更可靠，建议处理前先检查模型：
+已有 Android 代码可以继续在处理前检查模型：
 
 ```dart
 final isReady = await NativeCutout.isModelAvailable();
@@ -153,7 +141,7 @@ final isReady = await NativeCutout.isModelAvailable();
 if (!isReady) {
   final downloaded = await NativeCutout.downloadModel();
   if (!downloaded) {
-    debugPrint('ML Kit 模型下载失败');
+    debugPrint('模型预热失败');
     return;
   }
 }
@@ -161,7 +149,7 @@ if (!isReady) {
 final result = await NativeCutout.removeBackground(imagePath);
 ```
 
-如果想在 UI 上展示下载进度：
+如果已有 UI 展示模型进度：
 
 ```dart
 final sub = NativeCutout.downloadProgress.listen((progress) {
@@ -172,7 +160,9 @@ final ok = await NativeCutout.downloadModel();
 await sub.cancel();
 ```
 
-需要重新测试「首次下载」流程时：
+Android 上 `downloadModel()` 会立即发送一个 completed 事件，因为模型已经随包内置。
+
+如果仍需调用旧的清理模型路径：
 
 ```dart
 await NativeCutout.clearModel();
@@ -180,13 +170,15 @@ final isStillAvailable = await NativeCutout.isModelAvailable();
 debugPrint('清除后是否仍可用: $isStillAvailable');
 ```
 
+Android 上 `clearModel()` 是空操作，模型仍然可用。
+
 使用文件缓存输出时，也可以清除历史生成的 PNG：
 
 ```dart
 await NativeCutout.clearCache();
 ```
 
-iOS 上：
+iOS 和 Android 上：
 
 - `isModelAvailable()` 始终返回 `true`
 - `downloadModel()` 是空操作，返回 `true`
@@ -248,7 +240,8 @@ Future<bool> NativeCutout.isModelAvailable()
 
 ### `NativeCutout.downloadModel`
 
-在需要时触发 Android ML Kit 分割模块下载。
+在需要时预热 Android 模型路径。由于 U2-Net 模型随包内置，该方法会立即返回
+`true` 并发送 completed 进度事件。
 
 ```dart
 Future<bool> NativeCutout.downloadModel()
@@ -256,19 +249,15 @@ Future<bool> NativeCutout.downloadModel()
 
 ### `NativeCutout.clearModel`
 
-请求释放 Android ML Kit 已下载的模块。
+请求释放平台管理的模型资源。Android 模型随包内置，因此这是空操作并返回 `true`。
 
 ```dart
 Future<bool> NativeCutout.clearModel()
 ```
 
-> **说明**
->
-> Android 端底层调用的是 Google Play services 的 `releaseModules(...)`，这是一次**尽力而为**的请求。模型可能不会立刻消失，因此建议随后再调用一次 `isModelAvailable()` 来刷新当前状态。
-
 ### `NativeCutout.downloadProgress`
 
-Android 模型下载进度的广播流。
+Android 模型预热进度的广播流。
 
 ```dart
 Stream<ModelDownloadProgress> get NativeCutout.downloadProgress
@@ -276,7 +265,7 @@ Stream<ModelDownloadProgress> get NativeCutout.downloadProgress
 
 说明：
 
-- 仅在 Android 上、`downloadModel()` 运行期间发出事件
+- Android 上 `downloadModel()` 运行时会立即发出 completed 事件
 - iOS 上返回空流
 - 每个事件包含 `state`、`bytesDownloaded`、`totalBytes`、`errorCode`，以及计算字段 `fraction`
 
@@ -342,7 +331,7 @@ class CutoutFailure extends CutoutResult {
 
 - 输入必须是**本地文件路径**
 - iOS 端需要 **iOS 17+** 且**真机**
-- Android 端依赖 Google Play services 与一次**初始模型下载**（首次调用时隐式触发，或通过 `downloadModel()` 显式触发）；模型未缓存时首次调用**对离线不友好**
+- Android 端内置 U2-Net light 模型，无需 Play services 模型下载，可离线抠图
 - 抠图质量取决于平台分割引擎和源图质量
 
 ## Example 示例工程
@@ -350,9 +339,9 @@ class CutoutFailure extends CutoutResult {
 仓库中的 [`example/`](example/) 工程演示了：
 
 - 从相册选图
-- 检查 / 下载 Android 模型
-- 监听 Android 模型下载进度
-- 清除 Android 模型并刷新可用性，便于反复测试
+- 检查 / 预热 Android 模型
+- 监听 Android 模型预热进度
+- 调用兼容的清理模型路径
 - 执行背景去除
 - 在结果页切换 `cropToSubject`
 - 切换 `writeToCache`，对比缓存文件输出与内存字节输出
@@ -363,3 +352,6 @@ class CutoutFailure extends CutoutResult {
 ## License
 
 MIT
+
+Android 内置的 `u2netp.onnx` 模型是 U2-Net light 变体，来源于 Apache-2.0
+授权的 U-2-Net 项目。

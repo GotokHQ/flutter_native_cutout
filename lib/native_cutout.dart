@@ -100,9 +100,10 @@ class CutoutFailure extends CutoutResult {
   String toString() => 'CutoutFailure($code: $message)';
 }
 
-/// Install state of the Android ML Kit model.
+/// Install state reported by Android model warm-up calls.
 ///
-/// Mirrors Google Play Services `ModuleInstallStatusUpdate.InstallState`.
+/// Android currently bundles its model, so `completed` is emitted immediately
+/// when [NativeCutout.downloadModel] is called.
 enum ModelInstallState {
   unknown,
   pending,
@@ -114,7 +115,7 @@ enum ModelInstallState {
   failed,
 }
 
-/// Snapshot of Android ML model download progress.
+/// Snapshot of Android model warm-up progress.
 ///
 /// Emitted on [NativeCutout.downloadProgress] while [NativeCutout.downloadModel]
 /// is running. iOS never emits events (Vision framework is bundled).
@@ -122,10 +123,10 @@ class ModelDownloadProgress {
   /// Current install state reported by Play Services.
   final ModelInstallState state;
 
-  /// Bytes downloaded so far. May be 0 before the download actually starts.
+  /// Bytes downloaded so far. Always 0 when the model is bundled.
   final int bytesDownloaded;
 
-  /// Total bytes to download. May be 0 before the download actually starts.
+  /// Total bytes to download. Always 0 when the model is bundled.
   final int totalBytes;
 
   /// Play Services error code when [state] is [ModelInstallState.failed].
@@ -149,7 +150,7 @@ class ModelDownloadProgress {
 
 /// AI-powered background removal using native platform APIs.
 ///
-/// Uses iOS Vision Framework (iOS 17+) and Android ML Kit Subject Segmentation.
+/// Uses iOS Vision Framework (iOS 17+) and a bundled Android U2-Net model.
 class NativeCutout {
   NativeCutout._();
 
@@ -195,20 +196,20 @@ class NativeCutout {
     return NativeCutoutPlatform.instance.clearCache();
   }
 
-  /// Checks if the ML model is available and ready to use.
+  /// Checks if the native model/runtime is available and ready to use.
   ///
-  /// On Android, the ML Kit subject segmentation model must be downloaded
-  /// before use. Call [downloadModel] if this returns false.
+  /// On Android, the U2-Net model is bundled with the plugin and this returns
+  /// true unless the native runtime fails to load.
   ///
   /// On iOS, this always returns true as the Vision framework is built-in.
   static Future<bool> isModelAvailable() {
     return NativeCutoutPlatform.instance.isModelAvailable();
   }
 
-  /// Downloads the ML model required for background removal.
+  /// Warms up the model required for background removal.
   ///
-  /// On Android, this triggers the download of the ML Kit subject segmentation
-  /// model from Google Play Services. The download happens in the background.
+  /// On Android, the model is bundled with the app, so this emits a completed
+  /// progress event and returns true.
   ///
   /// On iOS, this is a no-op and always returns true.
   ///
@@ -217,21 +218,19 @@ class NativeCutout {
     return NativeCutoutPlatform.instance.downloadModel();
   }
 
-  /// Requests release of the downloaded Android ML Kit model.
+  /// Requests release of any platform-managed model resources.
   ///
-  /// This delegates to Google Play services `releaseModules(...)`, so the
-  /// behavior is best-effort and removal may not happen immediately. Use
-  /// [isModelAvailable] afterwards to refresh the current availability state.
+  /// Android bundles the model, so there is no downloaded module to remove.
   ///
   /// On iOS, this is a no-op and always returns true.
   static Future<bool> clearModel() {
     return NativeCutoutPlatform.instance.clearModel();
   }
 
-  /// Broadcast stream of download progress events while [downloadModel] runs.
+  /// Broadcast stream of model warm-up progress events while [downloadModel] runs.
   ///
-  /// Only emits on Android. iOS returns an empty stream since the Vision
-  /// framework is bundled with the system.
+  /// Android emits a completed event immediately because the model is bundled.
+  /// iOS returns an empty stream since the Vision framework is bundled with the system.
   static Stream<ModelDownloadProgress> get downloadProgress =>
       NativeCutoutPlatform.instance.downloadProgress;
 }

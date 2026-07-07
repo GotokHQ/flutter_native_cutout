@@ -18,7 +18,7 @@ Native background removal for Flutter using platform image segmentation APIs.
 It is built on top of:
 
 - **iOS**: Vision Framework (`VNGenerateForegroundInstanceMaskRequest`)
-- **Android**: Google ML Kit Subject Segmentation
+- **Android**: bundled U2-Net light model running through a native Android inference runtime
 
 ## Features
 
@@ -29,7 +29,7 @@ It is built on top of:
 - Handles **EXIF orientation** before segmentation
 - Optional subject-bound cropping via `CutoutOptions.cropToSubject`
 - Cache management via `clearCache()`
-- Android model lifecycle helpers: availability check, download, progress, and clear
+- Android model lifecycle helpers kept for API compatibility (bundled model, no network download)
 - Simple Dart API with typed success/failure results
 
 ## Platform support
@@ -37,12 +37,12 @@ It is built on top of:
 | Platform | Engine | Minimum version | Notes |
 | --- | --- | --- | --- |
 | iOS | Vision Framework | iOS 13.0 (compile) / iOS 17.0 (runtime) | Requires a **real device** for actual processing |
-| Android | ML Kit Subject Segmentation | API 21+ | Segmentation model is downloaded by Google Play services on demand |
+| Android | Bundled U2-Net light | API 21+ | Segmentation model ships with the app; no Google Play services model download |
 
 > **Important**
 >
 > - On **iOS Simulator**, foreground extraction is not available. Use a real iPhone or iPad.
-> - On **Android**, the ML Kit model is **not bundled** in your APK. If it isn't already on the device, the first call to `removeBackground` will trigger an implicit download via Google Play services — that first call will block until the download completes and will fail when the device is offline. See [Android setup](#android-setup) for the recommended explicit warm-up flow.
+> - On **Android**, the U2-Net light model is bundled in the app. `removeBackground` works offline and does not depend on Google Play services optional ML modules.
 
 ## Installation
 
@@ -76,33 +76,16 @@ cd ios && pod install
 
 The plugin supports **Android API 21+** and requires no manual `AndroidManifest.xml` changes.
 
-### How the ML Kit model is delivered
+### How the Android model is delivered
 
-This plugin uses the **unbundled** variant of ML Kit Subject Segmentation
-(`play-services-mlkit-subject-segmentation`). The segmentation model is **not**
-shipped inside your APK — it is delivered by Google Play services and lives
-outside your app. There are two ways the model gets onto the device:
+The Android model is bundled with the plugin as `u2netp.onnx` (U2-Net light).
+There is no ML Kit / Google Play services optional module to download, load, or
+evict, so the cutout feature works offline immediately after installation.
 
-1. **Implicit download (default, lazy)** — the first call to
-   `NativeCutout.removeBackground` on a device that does not yet have the model
-   triggers an internal download inside ML Kit. The `removeBackground` future
-   will not complete until the download finishes, which means:
-   - The very first cutout on a fresh install will take noticeably longer
-   - It will fail when the device is offline (typical error: `processingFailed`)
-   - There is **no progress callback** during this implicit download — your UI
-     can only show an indeterminate spinner
-
-2. **Explicit warm-up (recommended)** — call `NativeCutout.downloadModel()`
-   ahead of time (e.g. on app launch, or the first time the user opens the
-   editor). This path streams progress through `NativeCutout.downloadProgress`,
-   lets you render a real download UI, and removes the first-cutout latency
-   spike.
-
-See the [Recommended Android warm-up flow](#recommended-android-warm-up-flow)
-below for code.
-
-For testing, `NativeCutout.clearModel()` requests Google Play services to
-release the downloaded module so you can re-exercise the first-download path.
+`NativeCutout.isModelAvailable()`, `NativeCutout.downloadModel()`,
+`NativeCutout.downloadProgress`, and `NativeCutout.clearModel()` are still
+available for existing app code, but they complete immediately because there is
+no remote model lifecycle to manage.
 
 ## Quick start
 
@@ -150,9 +133,9 @@ final result = await NativeCutout.removeBackground(
 );
 ```
 
-## Recommended Android warm-up flow
+## Android warm-up compatibility flow
 
-If you want a more reliable first-run experience on Android, check the model before processing:
+Existing Android setup code can keep checking the model before processing:
 
 ```dart
 final isReady = await NativeCutout.isModelAvailable();
@@ -160,7 +143,7 @@ final isReady = await NativeCutout.isModelAvailable();
 if (!isReady) {
   final downloaded = await NativeCutout.downloadModel();
   if (!downloaded) {
-    debugPrint('ML Kit model download failed');
+    debugPrint('Model warm-up failed');
     return;
   }
 }
@@ -168,7 +151,7 @@ if (!isReady) {
 final result = await NativeCutout.removeBackground(imagePath);
 ```
 
-If you want to surface download progress in your UI:
+If you already surface model progress in your UI:
 
 ```dart
 final sub = NativeCutout.downloadProgress.listen((progress) {
@@ -179,7 +162,10 @@ final ok = await NativeCutout.downloadModel();
 await sub.cancel();
 ```
 
-If you need to re-test the first-download flow on Android:
+`downloadModel()` emits a completed event immediately on Android because the
+model is bundled.
+
+If you need to call the old clear-model path:
 
 ```dart
 await NativeCutout.clearModel();
@@ -187,13 +173,15 @@ final isStillAvailable = await NativeCutout.isModelAvailable();
 debugPrint('available after clear: $isStillAvailable');
 ```
 
+`clearModel()` is a no-op on Android and the model remains available.
+
 If you are using cached file output, you can also clear old generated PNGs:
 
 ```dart
 await NativeCutout.clearCache();
 ```
 
-On iOS:
+On iOS and Android:
 
 - `isModelAvailable()` always returns `true`
 - `downloadModel()` is a no-op and returns `true`
@@ -255,7 +243,8 @@ Future<bool> NativeCutout.isModelAvailable()
 
 ### `NativeCutout.downloadModel`
 
-Triggers download of the Android ML Kit segmentation module when needed.
+Warms up the Android model path when needed. With the bundled U2-Net model this
+returns `true` immediately and emits a completed progress event.
 
 ```dart
 Future<bool> NativeCutout.downloadModel()
@@ -263,19 +252,16 @@ Future<bool> NativeCutout.downloadModel()
 
 ### `NativeCutout.clearModel`
 
-Requests release of the downloaded Android ML Kit module.
+Requests release of platform-managed model resources. With the bundled Android
+model this is a no-op and returns `true`.
 
 ```dart
 Future<bool> NativeCutout.clearModel()
 ```
 
-> **Note**
->
-> On Android this delegates to Google Play services `releaseModules(...)`, which is a **best-effort** request. The model may not disappear immediately, so call `isModelAvailable()` again to refresh the current state.
-
 ### `NativeCutout.downloadProgress`
 
-Broadcast stream of Android model download progress events.
+Broadcast stream of Android model warm-up progress events.
 
 ```dart
 Stream<ModelDownloadProgress> get NativeCutout.downloadProgress
@@ -283,7 +269,7 @@ Stream<ModelDownloadProgress> get NativeCutout.downloadProgress
 
 Notes:
 
-- Only emits on Android while `downloadModel()` is running
+- Emits a completed event immediately on Android while `downloadModel()` is running
 - Returns an empty stream on iOS
 - Each event includes `state`, `bytesDownloaded`, `totalBytes`, `errorCode`, and computed `fraction`
 
@@ -349,7 +335,7 @@ For the highest-quality cutout:
 
 - Input must be a **local file path**
 - iOS processing requires **iOS 17+** and a **real device**
-- Android requires Google Play services and an **initial model download** (implicit on first use, or explicit via `downloadModel()`); the first call is **offline-unfriendly** if the model isn't already cached
+- Android bundles the U2-Net light model, so there is no Play services model download and cutout works offline
 - The quality of the result depends on the platform segmentation engine and source image quality
 
 ## Example app
@@ -357,9 +343,9 @@ For the highest-quality cutout:
 The [`example/`](example/) app in this repository demonstrates:
 
 - picking an image from the gallery
-- checking/downloading the Android model
-- observing Android model download progress
-- clearing the Android model and refreshing availability for repeat testing
+- checking/warming up the Android model
+- observing Android model warm-up progress
+- calling the compatibility clear-model path
 - running background removal
 - toggling `cropToSubject` on the result page
 - toggling `writeToCache` to compare cache-file vs memory-bytes output
@@ -370,3 +356,6 @@ The [`example/`](example/) app in this repository demonstrates:
 ## License
 
 MIT
+
+The bundled Android `u2netp.onnx` model is a U2-Net light variant derived from
+the Apache-2.0 licensed U-2-Net project.

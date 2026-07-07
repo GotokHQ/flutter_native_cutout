@@ -1,3 +1,9 @@
+## 0.3.0 (GotokHQ fork)
+
+* Android: replaced ML Kit Subject Segmentation with a bundled U2-Net light model running fully on-device, removing the Google Play services optional module and download dependency.
+* Android: `isModelAvailable()`, `downloadModel()`, and `clearModel()` now remain API-compatible but complete immediately because the model ships with the app.
+* Android: kept the existing matte post-processing path (`featherRadius`, `edgeErode`, bilinear mask upscale, and `PorterDuff.DST_IN` compositing).
+
 ## 0.2.1 (GotokHQ fork)
 
 * Added `CutoutOptions.featherRadius` and `CutoutOptions.edgeErode` for higher-fidelity matte edges (both default to `0`, preserving previous behavior).

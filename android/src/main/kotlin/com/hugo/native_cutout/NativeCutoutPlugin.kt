@@ -1,5 +1,9 @@
 package com.hugo.native_cutout
 
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -7,25 +11,19 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.os.Handler
+import android.os.Looper
 import androidx.exifinterface.media.ExifInterface
-import com.google.android.gms.common.moduleinstall.InstallStatusListener
-import com.google.android.gms.common.moduleinstall.ModuleInstall
-import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
-import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate
-import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate.InstallState
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
-import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
-import android.os.Handler
-import android.os.Looper
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -36,6 +34,7 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     private lateinit var progressChannel: EventChannel
     private lateinit var context: android.content.Context
     private var progressSink: EventChannel.EventSink? = null
+    private var segmenter: U2NetSegmenter? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val workerExecutor = Executors.newSingleThreadExecutor()
 
@@ -66,27 +65,19 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         progressSink = null
     }
 
-    private fun emitProgress(update: ModuleInstallStatusUpdate) {
-        val sink = progressSink ?: return
-        val progress = update.progressInfo
-        val payload = mapOf(
-            "state" to stateToString(update.installState),
-            "bytesDownloaded" to (progress?.bytesDownloaded ?: 0L),
-            "totalBytes" to (progress?.totalBytesToDownload ?: 0L),
-            "errorCode" to update.errorCode,
-        )
-        mainHandler.post { sink.success(payload) }
+    private fun getSegmenter(): U2NetSegmenter {
+        return segmenter ?: U2NetSegmenter(context).also { segmenter = it }
     }
 
-    private fun stateToString(state: Int): String = when (state) {
-        InstallState.STATE_PENDING -> "pending"
-        InstallState.STATE_DOWNLOADING -> "downloading"
-        InstallState.STATE_DOWNLOAD_PAUSED -> "downloadPaused"
-        InstallState.STATE_INSTALLING -> "installing"
-        InstallState.STATE_COMPLETED -> "completed"
-        InstallState.STATE_CANCELED -> "canceled"
-        InstallState.STATE_FAILED -> "failed"
-        else -> "unknown"
+    private fun emitModelReadyProgress() {
+        val sink = progressSink ?: return
+        val payload = mapOf(
+            "state" to "completed",
+            "bytesDownloaded" to 0L,
+            "totalBytes" to 0L,
+            "errorCode" to null,
+        )
+        mainHandler.post { sink.success(payload) }
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -123,18 +114,14 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     }
 
     private fun checkModelAvailability(result: Result) {
-        val segmenter = SubjectSegmentation.getClient(
-            SubjectSegmenterOptions.Builder().build()
-        )
-        val moduleInstallClient = ModuleInstall.getClient(context)
-
-        moduleInstallClient.areModulesAvailable(segmenter)
-            .addOnSuccessListener { response ->
-                result.success(response.areModulesAvailable())
+        workerExecutor.execute {
+            try {
+                getSegmenter()
+                postSuccess(result, true)
+            } catch (e: Exception) {
+                postError(result, "CHECK_FAILED", "Failed to load bundled model: ${e.message}")
             }
-            .addOnFailureListener { e ->
-                result.error("CHECK_FAILED", "Failed to check model availability: ${e.message}", null)
-            }
+        }
     }
 
     private fun clearCache(result: Result) {
@@ -150,42 +137,19 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     }
 
     private fun clearModel(result: Result) {
-        val segmenter = SubjectSegmentation.getClient(
-            SubjectSegmenterOptions.Builder().build()
-        )
-        val moduleInstallClient = ModuleInstall.getClient(context)
-
-        moduleInstallClient.releaseModules(segmenter)
-            .addOnSuccessListener {
-                result.success(true)
-            }
-            .addOnFailureListener { e ->
-                result.error("CLEAR_FAILED", "Failed to clear model: ${e.message}", null)
-            }
+        result.success(true)
     }
 
     private fun downloadModel(result: Result) {
-        val segmenter = SubjectSegmentation.getClient(
-            SubjectSegmenterOptions.Builder().build()
-        )
-        val moduleInstallClient = ModuleInstall.getClient(context)
-
-        val listener = InstallStatusListener { update -> emitProgress(update) }
-
-        val moduleInstallRequest = ModuleInstallRequest.newBuilder()
-            .addApi(segmenter)
-            .setListener(listener)
-            .build()
-
-        moduleInstallClient.installModules(moduleInstallRequest)
-            .addOnSuccessListener {
-                moduleInstallClient.unregisterListener(listener)
-                result.success(true)
+        workerExecutor.execute {
+            try {
+                getSegmenter()
+                emitModelReadyProgress()
+                postSuccess(result, true)
+            } catch (e: Exception) {
+                postError(result, "DOWNLOAD_FAILED", "Failed to load bundled model: ${e.message}")
             }
-            .addOnFailureListener { e ->
-                moduleInstallClient.unregisterListener(listener)
-                result.error("DOWNLOAD_FAILED", "Failed to download model: ${e.message}", null)
-            }
+        }
     }
 
     private fun removeBackground(
@@ -211,84 +175,62 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
 
             val bitmap = fixOrientation(imagePath, originalBitmap)
 
-            val options = SubjectSegmenterOptions.Builder()
-                .enableForegroundConfidenceMask()
-                .build()
+            try {
+                val segmentation = getSegmenter().segment(bitmap)
+                val mask = segmentation.mask
 
-            val segmenter = SubjectSegmentation.getClient(options)
-            val inputImage = InputImage.fromBitmap(bitmap, 0)
+                // The mask is min/max normalized, so subject presence must be
+                // judged on the raw sigmoid peak, not the normalized values.
+                val hasSubject = segmentation.peakConfidence > 0.5f
 
-            segmenter.process(inputImage)
-                .addOnSuccessListener(workerExecutor) { segmentationResult ->
-                    val mask = segmentationResult.foregroundConfidenceMask
-                    if (mask == null) {
-                        bitmap.recycle()
-                        if (bitmap != originalBitmap) originalBitmap.recycle()
-                        postError(result, "NO_SUBJECT", "No foreground mask generated")
-                        return@addOnSuccessListener
-                    }
-
-                    val width = bitmap.width
-                    val height = bitmap.height
-
-                    mask.rewind()
-                    var hasSubject = false
-                    while (mask.hasRemaining()) {
-                        if (mask.get() > 0.1f) {
-                            hasSubject = true
-                            break
-                        }
-                    }
-
-                    if (!hasSubject) {
-                        bitmap.recycle()
-                        if (bitmap != originalBitmap) originalBitmap.recycle()
-                        postError(result, "NO_SUBJECT", "No foreground subject detected in image")
-                        return@addOnSuccessListener
-                    }
-
-                    val resultBitmap = applyMask(
-                        bitmap,
-                        mask,
-                        width,
-                        height,
-                        cropToSubject,
-                        featherRadius,
-                        edgeErode
-                    )
+                if (!hasSubject) {
                     bitmap.recycle()
                     if (bitmap != originalBitmap) originalBitmap.recycle()
+                    postError(result, "NO_SUBJECT", "No foreground subject detected in image")
+                    return@execute
+                }
 
-                    if (resultBitmap == null) {
-                        postError(result, "PROCESSING_FAILED", "Failed to apply mask")
-                        return@addOnSuccessListener
-                    }
+                val resultBitmap = applyMask(
+                    bitmap,
+                    mask,
+                    segmentation.width,
+                    segmentation.height,
+                    cropToSubject,
+                    featherRadius,
+                    edgeErode
+                )
+                bitmap.recycle()
+                if (bitmap != originalBitmap) originalBitmap.recycle()
 
-                    if (writeToCache) {
-                        try {
-                            val cacheDir = File(context.cacheDir, "native_cutout").apply { mkdirs() }
-                            val outFile = File(cacheDir, "cutout_${UUID.randomUUID()}.png")
-                            outFile.outputStream().use { os ->
-                                resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
-                            }
-                            resultBitmap.recycle()
-                            postSuccess(result, outFile.absolutePath)
-                        } catch (e: Exception) {
-                            resultBitmap.recycle()
-                            postError(result, "PROCESSING_FAILED", "Failed to write PNG to cache: ${e.message}")
+                if (resultBitmap == null) {
+                    postError(result, "PROCESSING_FAILED", "Failed to apply mask")
+                    return@execute
+                }
+
+                if (writeToCache) {
+                    try {
+                        val cacheDir = File(context.cacheDir, "native_cutout").apply { mkdirs() }
+                        val outFile = File(cacheDir, "cutout_${UUID.randomUUID()}.png")
+                        outFile.outputStream().use { os ->
+                            resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
                         }
-                    } else {
-                        val outputStream = ByteArrayOutputStream()
-                        resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
                         resultBitmap.recycle()
-                        postSuccess(result, outputStream.toByteArray())
+                        postSuccess(result, outFile.absolutePath)
+                    } catch (e: Exception) {
+                        resultBitmap.recycle()
+                        postError(result, "PROCESSING_FAILED", "Failed to write PNG to cache: ${e.message}")
                     }
+                } else {
+                    val outputStream = ByteArrayOutputStream()
+                    resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+                    resultBitmap.recycle()
+                    postSuccess(result, outputStream.toByteArray())
                 }
-                .addOnFailureListener(workerExecutor) { e ->
-                    bitmap.recycle()
-                    if (bitmap != originalBitmap) originalBitmap.recycle()
-                    postError(result, "PROCESSING_FAILED", "Segmentation failed: ${e.message}")
-                }
+            } catch (e: Exception) {
+                bitmap.recycle()
+                if (bitmap != originalBitmap) originalBitmap.recycle()
+                postError(result, "PROCESSING_FAILED", "Segmentation failed: ${e.message}")
+            }
         }
     }
 
@@ -480,6 +422,104 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         channel.setMethodCallHandler(null)
         progressChannel.setStreamHandler(null)
         progressSink = null
+        segmenter?.close()
+        segmenter = null
         workerExecutor.shutdown()
+    }
+}
+
+private data class SegmentationMask(
+    val mask: FloatBuffer,
+    val width: Int,
+    val height: Int,
+    /** Highest raw (pre-normalization) confidence; low values mean no subject. */
+    val peakConfidence: Float
+)
+
+private class U2NetSegmenter(private val context: Context) : AutoCloseable {
+    companion object {
+        private const val MODEL_NAME = "u2netp.onnx"
+        private const val INPUT_SIZE = 320
+        private val MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
+        private val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
+        private val INPUT_SHAPE = longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong())
+    }
+
+    private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private val session: OrtSession
+    private val inputName: String
+
+    init {
+        val modelBytes = context.assets.open(MODEL_NAME).use { it.readBytes() }
+        session = OrtSession.SessionOptions().use { options ->
+            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            options.setIntraOpNumThreads(
+                Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+            )
+            environment.createSession(modelBytes, options)
+        }
+        inputName = session.inputNames.first()
+    }
+
+    fun segment(bitmap: Bitmap): SegmentationMask {
+        val modelBitmap = Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true)
+        val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
+        modelBitmap.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+        if (modelBitmap != bitmap) modelBitmap.recycle()
+
+        val input = ByteBuffer
+            .allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * java.lang.Float.BYTES)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+
+        for (channel in 0 until 3) {
+            for (pixel in pixels) {
+                val value = when (channel) {
+                    0 -> (pixel shr 16) and 0xFF
+                    1 -> (pixel shr 8) and 0xFF
+                    else -> pixel and 0xFF
+                } / 255f
+                input.put((value - MEAN[channel]) / STD[channel])
+            }
+        }
+        input.rewind()
+
+        OnnxTensor.createTensor(environment, input, INPUT_SHAPE).use { tensor ->
+            session.run(mapOf(inputName to tensor)).use { outputs ->
+                val outputTensor = outputs.get(0) as? OnnxTensor
+                    ?: throw IllegalStateException("U2-Net did not return a float mask")
+                val output = outputTensor.floatBuffer
+                    ?: throw IllegalStateException("U2-Net mask output is not float data")
+                return buildMask(output)
+            }
+        }
+    }
+
+    private fun buildMask(output: FloatBuffer): SegmentationMask {
+        output.rewind()
+        val raw = FloatArray(INPUT_SIZE * INPUT_SIZE)
+        var min = Float.POSITIVE_INFINITY
+        var max = Float.NEGATIVE_INFINITY
+        for (i in raw.indices) {
+            val value = output.get()
+            raw[i] = value
+            if (value < min) min = value
+            if (value > max) max = value
+        }
+
+        val range = (max - min).takeIf { it > 1e-6f } ?: 1f
+        for (i in raw.indices) {
+            raw[i] = ((raw[i] - min) / range).coerceIn(0f, 1f)
+        }
+        return SegmentationMask(
+            FloatBuffer.wrap(raw),
+            INPUT_SIZE,
+            INPUT_SIZE,
+            peakConfidence = max
+        )
+    }
+
+    override fun close() {
+        session.close()
     }
 }

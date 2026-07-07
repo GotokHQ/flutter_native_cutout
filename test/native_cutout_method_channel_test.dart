@@ -29,10 +29,7 @@ void main() {
 
       final result = await platform.removeBackground(
         '/tmp/photo.jpg',
-        options: const CutoutOptions(
-          cropToSubject: true,
-          writeToCache: false,
-        ),
+        options: const CutoutOptions(cropToSubject: true, writeToCache: false),
       );
 
       expect(calls, hasLength(1));
@@ -42,6 +39,8 @@ void main() {
         'options': <String, dynamic>{
           'cropToSubject': true,
           'writeToCache': false,
+          'featherRadius': 0.0,
+          'edgeErode': 0,
         },
       });
 
@@ -66,6 +65,8 @@ void main() {
         'options': <String, dynamic>{
           'cropToSubject': false,
           'writeToCache': true,
+          'featherRadius': 0.0,
+          'edgeErode': 0,
         },
       });
 

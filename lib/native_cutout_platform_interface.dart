@@ -25,22 +25,20 @@ abstract class NativeCutoutPlatform extends PlatformInterface {
     throw UnimplementedError('removeBackground() has not been implemented.');
   }
 
-  /// Checks if the ML model is available on Android.
-  /// Always returns true on iOS (model is bundled with the system).
+  /// Checks if the native model/runtime is available.
+  /// Always returns true on bundled-model platforms.
   Future<bool> isModelAvailable() {
     throw UnimplementedError('isModelAvailable() has not been implemented.');
   }
 
-  /// Downloads the ML model on Android.
-  /// No-op on iOS (model is bundled with the system).
+  /// Warms up the native model when needed.
+  /// No-op on bundled-model platforms.
   Future<bool> downloadModel() {
     throw UnimplementedError('downloadModel() has not been implemented.');
   }
 
-  /// Requests release of the downloaded Android ML model.
-  ///
-  /// This is a best-effort request delegated to Google Play services and does
-  /// not guarantee immediate removal. No-op on iOS.
+  /// Requests release of platform-managed model resources.
+  /// No-op when the model is bundled.
   Future<bool> clearModel() {
     throw UnimplementedError('clearModel() has not been implemented.');
   }
@@ -51,7 +49,7 @@ abstract class NativeCutoutPlatform extends PlatformInterface {
     throw UnimplementedError('clearCache() has not been implemented.');
   }
 
-  /// Download progress events for the Android ML model.
+  /// Model warm-up progress events.
   /// Always empty on iOS.
   Stream<ModelDownloadProgress> get downloadProgress {
     throw UnimplementedError('downloadProgress has not been implemented.');

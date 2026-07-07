@@ -64,7 +64,7 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
 
   @override
   Future<bool> downloadModel() async {
-    // iOS Vision framework is built-in, no download needed
+    // iOS Vision framework is built-in, no warm-up needed.
     if (Platform.isIOS) return true;
 
     try {
