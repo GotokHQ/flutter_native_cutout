@@ -18,7 +18,7 @@ Native background removal for Flutter using platform image segmentation APIs.
 It is built on top of:
 
 - **iOS**: Vision Framework (`VNGenerateForegroundInstanceMaskRequest`)
-- **Android**: bundled U2-Net light model running through a native Android inference runtime
+- **Android**: bundled U2-Net light model running through a native Android inference runtime by default, plus an opt-in ML Kit Subject Segmentation backend for comparison
 
 ## Features
 
@@ -29,7 +29,8 @@ It is built on top of:
 - Handles **EXIF orientation** before segmentation
 - Optional subject-bound cropping via `CutoutOptions.cropToSubject`
 - Cache management via `clearCache()`
-- Android model lifecycle helpers kept for API compatibility (bundled model, no network download)
+- Android backend selection via `CutoutOptions.backend`
+- Android model lifecycle helpers kept for API compatibility, with ML Kit module checks/downloads available when explicitly selected
 - Simple Dart API with typed success/failure results
 
 ## Platform support
@@ -37,12 +38,14 @@ It is built on top of:
 | Platform | Engine | Minimum version | Notes |
 | --- | --- | --- | --- |
 | iOS | Vision Framework | iOS 13.0 (compile) / iOS 17.0 (runtime) | Requires a **real device** for actual processing |
-| Android | Bundled U2-Net light | API 21+ | Segmentation model ships with the app; no Google Play services model download |
+| Android | Bundled U2-Net light (default) | API 21+ | Segmentation model ships with the app; no Google Play services model download |
+| Android | ML Kit Subject Segmentation (opt-in) | API 24+ | Comparison backend only; uses Google Play services optional module |
 
 > **Important**
 >
 > - On **iOS Simulator**, foreground extraction is not available. Use a real iPhone or iPad.
-> - On **Android**, the U2-Net light model is bundled in the app. `removeBackground` works offline and does not depend on Google Play services optional ML modules.
+> - On **Android**, the U2-Net light model is bundled in the app. The default `removeBackground` path works offline and does not depend on Google Play services optional ML modules.
+> - The ML Kit backend is opt-in for quality comparison. Its native crashes cannot be caught by Dart/Kotlin, so do not make it the default for broad production rollout without device gating.
 
 ## Installation
 
@@ -84,8 +87,10 @@ evict, so the cutout feature works offline immediately after installation.
 
 `NativeCutout.isModelAvailable()`, `NativeCutout.downloadModel()`,
 `NativeCutout.downloadProgress`, and `NativeCutout.clearModel()` are still
-available for existing app code, but they complete immediately because there is
-no remote model lifecycle to manage.
+available for existing app code. With the default U2-Net backend they complete
+immediately because there is no remote model lifecycle to manage. With
+`CutoutBackend.mlKitSubject`, they proxy the Google Play services optional
+module lifecycle.
 
 ## Quick start
 
@@ -102,6 +107,7 @@ import 'package:native_cutout/native_cutout.dart';
 final result = await NativeCutout.removeBackground(
   imagePath,
   options: const CutoutOptions(
+    backend: CutoutBackend.u2Net,
     cropToSubject: true,
     writeToCache: true,
   ),
@@ -121,6 +127,36 @@ switch (result) {
     return;
 }
 ```
+
+### Android comparison flow: opt into ML Kit
+
+For internal testing, you can run the older ML Kit Subject Segmentation backend
+with the same output pipeline:
+
+```dart
+final ready = await NativeCutout.isModelAvailable(
+  backend: CutoutBackend.mlKitSubject,
+);
+
+if (!ready) {
+  await NativeCutout.downloadModel(backend: CutoutBackend.mlKitSubject);
+}
+
+final result = await NativeCutout.removeBackground(
+  imagePath,
+  options: const CutoutOptions(
+    backend: CutoutBackend.mlKitSubject,
+    cropToSubject: true,
+  ),
+);
+```
+
+If the ML Kit optional module is not available, or ML Kit throws a recoverable
+load/inference error, Android logs a warning and falls back to the bundled
+U2-Net backend. Keep this behind an internal tester toggle or device allowlist:
+ML Kit still uses a Google Play services optional native module, so fatal native
+failures such as `SIGBUS`, `SIGSEGV`, or `SIGABRT` are not recoverable in app
+code.
 
 ### In-memory flow: return PNG bytes directly
 
@@ -162,8 +198,9 @@ final ok = await NativeCutout.downloadModel();
 await sub.cancel();
 ```
 
-`downloadModel()` emits a completed event immediately on Android because the
-model is bundled.
+`downloadModel()` emits a completed event immediately on Android for the default
+U2-Net backend because the model is bundled. Pass
+`backend: CutoutBackend.mlKitSubject` to request the ML Kit optional module.
 
 If you need to call the old clear-model path:
 
@@ -173,7 +210,9 @@ final isStillAvailable = await NativeCutout.isModelAvailable();
 debugPrint('available after clear: $isStillAvailable');
 ```
 
-`clearModel()` is a no-op on Android and the model remains available.
+`clearModel()` is a no-op for the default U2-Net backend and the model remains
+available. Pass `backend: CutoutBackend.mlKitSubject` to ask Play services to
+release the ML Kit optional module.
 
 If you are using cached file output, you can also clear old generated PNGs:
 
@@ -181,7 +220,7 @@ If you are using cached file output, you can also clear old generated PNGs:
 await NativeCutout.clearCache();
 ```
 
-On iOS and Android:
+On iOS and Android with the default U2-Net/Vision paths:
 
 - `isModelAvailable()` always returns `true`
 - `downloadModel()` is a no-op and returns `true`
@@ -215,6 +254,7 @@ Returns:
 
 ```dart
 const CutoutOptions(
+  backend: CutoutBackend.u2Net,
   cropToSubject: false,
   writeToCache: true,
 )
@@ -224,6 +264,8 @@ Available fields:
 
 - `cropToSubject`: when `true`, trims transparent margins and returns a tight subject crop; when `false`, preserves the original image canvas size
 - `writeToCache`: when `true` (default), writes the PNG to the app cache directory and returns `CutoutFileSuccess`; when `false`, returns `CutoutBytesSuccess`
+- `backend`: Android segmentation backend. Defaults to `CutoutBackend.u2Net`; use `CutoutBackend.mlKitSubject` only for controlled comparison testing.
+  Recoverable ML Kit availability/load failures fall back to U2-Net.
 
 ### `NativeCutout.clearCache`
 
@@ -238,25 +280,33 @@ Future<bool> NativeCutout.clearCache()
 Checks whether the native model/runtime is ready to use.
 
 ```dart
-Future<bool> NativeCutout.isModelAvailable()
+Future<bool> NativeCutout.isModelAvailable({
+  CutoutBackend backend = CutoutBackend.u2Net,
+})
 ```
 
 ### `NativeCutout.downloadModel`
 
 Warms up the Android model path when needed. With the bundled U2-Net model this
-returns `true` immediately and emits a completed progress event.
+returns `true` immediately and emits a completed progress event. With ML Kit,
+this requests the Play services optional module.
 
 ```dart
-Future<bool> NativeCutout.downloadModel()
+Future<bool> NativeCutout.downloadModel({
+  CutoutBackend backend = CutoutBackend.u2Net,
+})
 ```
 
 ### `NativeCutout.clearModel`
 
 Requests release of platform-managed model resources. With the bundled Android
-model this is a no-op and returns `true`.
+model this is a no-op and returns `true`. With ML Kit, this requests release of
+the optional module.
 
 ```dart
-Future<bool> NativeCutout.clearModel()
+Future<bool> NativeCutout.clearModel({
+  CutoutBackend backend = CutoutBackend.u2Net,
+})
 ```
 
 ### `NativeCutout.downloadProgress`
@@ -269,7 +319,7 @@ Stream<ModelDownloadProgress> get NativeCutout.downloadProgress
 
 Notes:
 
-- Emits a completed event immediately on Android while `downloadModel()` is running
+- Emits a completed event immediately on Android while the default U2-Net `downloadModel()` is running
 - Returns an empty stream on iOS
 - Each event includes `state`, `bytesDownloaded`, `totalBytes`, `errorCode`, and computed `fraction`
 

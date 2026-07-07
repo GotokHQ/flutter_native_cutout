@@ -27,18 +27,78 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
         {'imagePath': imagePath, 'options': options.toMap()},
       );
 
-      return switch (result) {
-        String path => CutoutFileSuccess(path),
-        Uint8List bytes => CutoutBytesSuccess(bytes),
-        _ => const CutoutFailure(
-          CutoutErrorCode.processingFailed,
-          'No result returned from native code',
-        ),
-      };
+      return _parseCutoutResult(result, options);
     } on PlatformException catch (e) {
       final code = _parseErrorCode(e.code);
       return CutoutFailure(code, e.message ?? 'Unknown error');
     }
+  }
+
+  CutoutResult _parseCutoutResult(Object? result, CutoutOptions options) {
+    return switch (result) {
+      String path => CutoutFileSuccess(
+        path,
+        backend: options.backend,
+        requestedBackend: options.backend,
+      ),
+      Uint8List bytes => CutoutBytesSuccess(
+        bytes,
+        backend: options.backend,
+        requestedBackend: options.backend,
+      ),
+      Map map => _parseStructuredCutoutResult(map, options),
+      _ => const CutoutFailure(
+        CutoutErrorCode.processingFailed,
+        'No result returned from native code',
+      ),
+    };
+  }
+
+  CutoutResult _parseStructuredCutoutResult(Map map, CutoutOptions options) {
+    final data = map.cast<Object?, Object?>();
+    final requestedBackend = _parseBackend(
+      data['requestedBackend'],
+      fallback: options.backend,
+    );
+    final backend = _parseBackend(data['backend'], fallback: requestedBackend);
+    final didFallback =
+        data['didFallback'] as bool? ?? backend != requestedBackend;
+
+    final path = data['path'];
+    if (path is String) {
+      return CutoutFileSuccess(
+        path,
+        backend: backend,
+        requestedBackend: requestedBackend,
+        didFallback: didFallback,
+      );
+    }
+
+    final pngBytes = data['pngBytes'];
+    if (pngBytes is Uint8List) {
+      return CutoutBytesSuccess(
+        pngBytes,
+        backend: backend,
+        requestedBackend: requestedBackend,
+        didFallback: didFallback,
+      );
+    }
+
+    return const CutoutFailure(
+      CutoutErrorCode.processingFailed,
+      'No cutout payload returned from native code',
+    );
+  }
+
+  CutoutBackend _parseBackend(
+    Object? value, {
+    required CutoutBackend fallback,
+  }) {
+    return switch (value) {
+      'u2Net' => CutoutBackend.u2Net,
+      'mlKitSubject' => CutoutBackend.mlKitSubject,
+      _ => fallback,
+    };
   }
 
   CutoutErrorCode _parseErrorCode(String code) {
@@ -50,12 +110,17 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
   }
 
   @override
-  Future<bool> isModelAvailable() async {
+  Future<bool> isModelAvailable({
+    CutoutBackend backend = CutoutBackend.u2Net,
+  }) async {
     // iOS Vision framework is built-in, always available
     if (Platform.isIOS) return true;
 
     try {
-      final result = await methodChannel.invokeMethod<bool>('isModelAvailable');
+      final result = await methodChannel.invokeMethod<bool>(
+        'isModelAvailable',
+        {'backend': backend.name},
+      );
       return result ?? false;
     } on PlatformException {
       return false;
@@ -63,12 +128,16 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
   }
 
   @override
-  Future<bool> downloadModel() async {
+  Future<bool> downloadModel({
+    CutoutBackend backend = CutoutBackend.u2Net,
+  }) async {
     // iOS Vision framework is built-in, no warm-up needed.
     if (Platform.isIOS) return true;
 
     try {
-      final result = await methodChannel.invokeMethod<bool>('downloadModel');
+      final result = await methodChannel.invokeMethod<bool>('downloadModel', {
+        'backend': backend.name,
+      });
       return result ?? false;
     } on PlatformException {
       return false;
@@ -76,12 +145,14 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
   }
 
   @override
-  Future<bool> clearModel() async {
+  Future<bool> clearModel({CutoutBackend backend = CutoutBackend.u2Net}) async {
     // iOS Vision framework is built-in, no downloaded module to clear.
     if (Platform.isIOS) return true;
 
     try {
-      final result = await methodChannel.invokeMethod<bool>('clearModel');
+      final result = await methodChannel.invokeMethod<bool>('clearModel', {
+        'backend': backend.name,
+      });
       return result ?? false;
     } on PlatformException {
       return false;

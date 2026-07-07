@@ -12,6 +12,11 @@ import 'cutout_page.dart';
 const String _sampleAsset = 'assets/cat.jpg';
 const String _modelDocUrl = 'https://huggingface.co/Heliosoph/u2net-onnx';
 
+String _backendLabel(CutoutBackend backend) => switch (backend) {
+  CutoutBackend.u2Net => 'U2-Net',
+  CutoutBackend.mlKitSubject => 'ML Kit',
+};
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -25,6 +30,7 @@ class _HomePageState extends State<HomePage> {
   bool? _isModelAvailable;
   bool _isDownloadingModel = false;
   bool _isClearingModel = false;
+  CutoutBackend _backend = CutoutBackend.u2Net;
   ModelDownloadProgress? _progress;
   StreamSubscription<ModelDownloadProgress>? _progressSub;
 
@@ -41,9 +47,19 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<bool> _checkModelAvailability() async {
-    final available = await NativeCutout.isModelAvailable();
+    final available = await NativeCutout.isModelAvailable(backend: _backend);
     if (mounted) setState(() => _isModelAvailable = available);
     return available;
+  }
+
+  Future<void> _setBackend(CutoutBackend backend) async {
+    if (backend == _backend || _isDownloadingModel || _isClearingModel) return;
+    setState(() {
+      _backend = backend;
+      _isModelAvailable = null;
+      _progress = null;
+    });
+    await _checkModelAvailability();
   }
 
   Future<void> _downloadModel() async {
@@ -56,7 +72,7 @@ class _HomePageState extends State<HomePage> {
       if (mounted) setState(() => _progress = p);
     });
 
-    final success = await NativeCutout.downloadModel();
+    final success = await NativeCutout.downloadModel(backend: _backend);
 
     await _progressSub?.cancel();
     _progressSub = null;
@@ -87,7 +103,7 @@ class _HomePageState extends State<HomePage> {
       _progress = null;
     });
 
-    final requested = await NativeCutout.clearModel();
+    final requested = await NativeCutout.clearModel(backend: _backend);
     final stillAvailable = await _checkModelAvailability();
 
     if (!mounted) return;
@@ -121,13 +137,16 @@ class _HomePageState extends State<HomePage> {
   void _openCutoutPage(String path) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => CutoutPage(imagePath: path)),
+      MaterialPageRoute(
+        builder: (_) => CutoutPage(imagePath: path, backend: _backend),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final canRun = _isModelAvailable == true;
+    final canRun =
+        _isModelAvailable == true || _backend == CutoutBackend.mlKitSubject;
     final isAndroid = Platform.isAndroid;
     return Scaffold(
       appBar: AppBar(
@@ -140,7 +159,14 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (isAndroid) ...[
+              _BackendSelector(
+                backend: _backend,
+                enabled: !_isDownloadingModel && !_isClearingModel,
+                onChanged: _setBackend,
+              ),
+              const SizedBox(height: 16),
               _ModelManagerCard(
+                backend: _backend,
                 isModelAvailable: _isModelAvailable,
                 isDownloading: _isDownloadingModel,
                 isClearing: _isClearingModel,
@@ -178,6 +204,7 @@ class _HomePageState extends State<HomePage> {
 
 class _ModelManagerCard extends StatelessWidget {
   const _ModelManagerCard({
+    required this.backend,
     required this.isModelAvailable,
     required this.isDownloading,
     required this.isClearing,
@@ -187,6 +214,7 @@ class _ModelManagerCard extends StatelessWidget {
     required this.onRefresh,
   });
 
+  final CutoutBackend backend;
   final bool? isModelAvailable;
   final bool isDownloading;
   final bool isClearing;
@@ -222,7 +250,7 @@ class _ModelManagerCard extends StatelessWidget {
                   ? 'Warming up model...'
                   : isClearing
                   ? 'Clearing model resources...'
-                  : 'Android model manager',
+                  : 'Android ${_backendLabel(backend)} manager',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 color: scheme.onTertiaryContainer,
@@ -300,6 +328,63 @@ class _ModelManagerCard extends StatelessWidget {
                 icon: const Icon(Icons.refresh),
                 label: const Text('Refresh status'),
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendSelector extends StatelessWidget {
+  const _BackendSelector({
+    required this.backend,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final CutoutBackend backend;
+  final bool enabled;
+  final ValueChanged<CutoutBackend> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Android segmentation backend',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<CutoutBackend>(
+              segments: const [
+                ButtonSegment(
+                  value: CutoutBackend.u2Net,
+                  label: Text('U2-Net'),
+                ),
+                ButtonSegment(
+                  value: CutoutBackend.mlKitSubject,
+                  label: Text('ML Kit'),
+                ),
+              ],
+              selected: {backend},
+              onSelectionChanged: enabled
+                  ? (values) => onChanged(values.single)
+                  : null,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              backend == CutoutBackend.u2Net
+                  ? 'Default: bundled ONNX model, offline, no Play services module.'
+                  : 'Comparison only: uses ML Kit optional module and may still crash natively on affected devices.',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ],
         ),

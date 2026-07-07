@@ -1,6 +1,6 @@
 name: native_cutout
-description: "On-device background removal for Flutter. iOS Vision (iOS 17+) and bundled Android U2-Net. Outputs transparent PNG."
-version: 0.3.0
+description: "On-device background removal for Flutter. iOS Vision, bundled Android U2-Net, and opt-in Android ML Kit comparison."
+version: 0.3.2
 homepage: https://github.com/xcc3641/flutter_native_cutout
 repository: https://github.com/xcc3641/flutter_native_cutout
 issue_tracker: https://github.com/xcc3641/flutter_native_cutout/issues
@@ -12,8 +12,8 @@ topics:
   - on-device-ml
 
 environment:
-  sdk: ^3.10.0
-  flutter: '>=3.3.0'
+  sdk: ^3.12.0
+  flutter: '>=3.44.0'
 
 dependencies:
   flutter:

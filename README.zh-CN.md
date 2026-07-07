@@ -18,7 +18,7 @@
 底层依赖：
 
 - **iOS**：Vision Framework（`VNGenerateForegroundInstanceMaskRequest`）
-- **Android**：随包内置的 U2-Net light 模型，通过 Android 原生推理运行时执行
+- **Android**：默认使用随包内置的 U2-Net light 模型；也提供可选的 ML Kit Subject Segmentation 后端用于内部效果对比
 
 ## 功能特性
 
@@ -29,7 +29,8 @@
 - 分割前自动修正 **EXIF 方向**
 - 可选「贴合主体」裁剪 `CutoutOptions.cropToSubject`
 - `clearCache()` 清理缓存
-- Android 保留模型生命周期 API 以兼容旧代码（模型随包内置，无需网络下载）
+- Android 可通过 `CutoutOptions.backend` 选择分割后端
+- Android 保留模型生命周期 API 以兼容旧代码；默认 U2-Net 无需下载，选择 ML Kit 时可管理 Google Play services 可选模块
 - 简洁的 Dart API，结果类型严格区分成功 / 失败
 
 ## 平台支持
@@ -37,12 +38,14 @@
 | 平台 | 引擎 | 最低版本 | 备注 |
 | --- | --- | --- | --- |
 | iOS | Vision Framework | iOS 13.0（编译）/ iOS 17.0（运行时） | 实际抠图需要**真机** |
-| Android | 内置 U2-Net light | API 21+ | 分割模型随 App 打包，无需 Google Play Services 下载 |
+| Android | 内置 U2-Net light（默认） | API 21+ | 分割模型随 App 打包，无需 Google Play Services 下载 |
+| Android | ML Kit Subject Segmentation（可选） | API 24+ | 仅建议用于内部效果对比；依赖 Google Play services 可选模块 |
 
 > **重要提示**
 >
 > - **iOS 模拟器**不支持前景分割，请使用 iPhone / iPad 真机。
-> - **Android 端的 U2-Net light 模型会随 App 一起打包**。`removeBackground` 可离线工作，不依赖 Google Play services 的可选 ML 模块。
+> - **Android 端默认的 U2-Net light 模型会随 App 一起打包**。默认 `removeBackground` 可离线工作，不依赖 Google Play services 的可选 ML 模块。
+> - ML Kit 后端仅用于内部效果对比。它的原生崩溃无法被 Dart/Kotlin 捕获，不建议在未做设备灰度或开关保护时作为大规模生产默认方案。
 
 ## 安装
 
@@ -77,13 +80,15 @@ cd ios && pod install
 
 ### Android 模型如何下发
 
-Android 模型以 `u2netp.onnx`（U2-Net light）的形式随插件打包。这里不再使用
+默认 Android 模型以 `u2netp.onnx`（U2-Net light）的形式随插件打包。默认路径不再使用
 ML Kit / Google Play services 的可选模块，因此没有远程模型下载、加载或被系统清理的问题；
-安装后即可离线使用抠图能力。
+安装后即可离线使用抠图能力。选择 `CutoutBackend.mlKitSubject` 时，插件会改用 ML Kit
+Subject Segmentation，便于和 U2-Net 进行效果对比。
 
 `NativeCutout.isModelAvailable()`、`NativeCutout.downloadModel()`、
 `NativeCutout.downloadProgress` 和 `NativeCutout.clearModel()` 仍然保留，
-便于兼容已有 App 代码；由于没有远程模型生命周期，它们都会立即完成。
+便于兼容已有 App 代码；默认 U2-Net 路径没有远程模型生命周期，因此会立即完成。
+传入 `backend: CutoutBackend.mlKitSubject` 时，这些方法会检查、下载或释放 ML Kit 可选模块。
 
 ## 快速开始
 
@@ -100,6 +105,7 @@ import 'package:native_cutout/native_cutout.dart';
 final result = await NativeCutout.removeBackground(
   imagePath,
   options: const CutoutOptions(
+    backend: CutoutBackend.u2Net,
     cropToSubject: true,
     writeToCache: true,
   ),
@@ -119,6 +125,33 @@ switch (result) {
     return;
 }
 ```
+
+### Android 对比流程：选择 ML Kit
+
+内部测试时可以显式切换到旧的 ML Kit Subject Segmentation 后端：
+
+```dart
+final ready = await NativeCutout.isModelAvailable(
+  backend: CutoutBackend.mlKitSubject,
+);
+
+if (!ready) {
+  await NativeCutout.downloadModel(backend: CutoutBackend.mlKitSubject);
+}
+
+final result = await NativeCutout.removeBackground(
+  imagePath,
+  options: const CutoutOptions(
+    backend: CutoutBackend.mlKitSubject,
+    cropToSubject: true,
+  ),
+);
+```
+
+如果 ML Kit 可选模块不可用，或 ML Kit 抛出可恢复的加载 / 推理错误，Android 会记录 warning
+日志并回退到内置 U2-Net 后端。建议只放在内部测试开关或设备白名单后面。ML Kit 仍然依赖
+Google Play services 的可选原生模块，`SIGBUS`、`SIGSEGV`、`SIGABRT` 等致命原生崩溃无法在
+App 代码中恢复。
 
 ### 内存字节流程：直接返回 PNG 字节
 
@@ -160,7 +193,8 @@ final ok = await NativeCutout.downloadModel();
 await sub.cancel();
 ```
 
-Android 上 `downloadModel()` 会立即发送一个 completed 事件，因为模型已经随包内置。
+默认 U2-Net 后端会立即发送 completed 事件，因为模型已经随包内置。传入
+`backend: CutoutBackend.mlKitSubject` 时会请求 ML Kit 可选模块。
 
 如果仍需调用旧的清理模型路径：
 
@@ -170,7 +204,8 @@ final isStillAvailable = await NativeCutout.isModelAvailable();
 debugPrint('清除后是否仍可用: $isStillAvailable');
 ```
 
-Android 上 `clearModel()` 是空操作，模型仍然可用。
+默认 U2-Net 后端的 `clearModel()` 是空操作，模型仍然可用。传入
+`backend: CutoutBackend.mlKitSubject` 时会请求释放 ML Kit 可选模块。
 
 使用文件缓存输出时，也可以清除历史生成的 PNG：
 
@@ -178,7 +213,7 @@ Android 上 `clearModel()` 是空操作，模型仍然可用。
 await NativeCutout.clearCache();
 ```
 
-iOS 和 Android 上：
+iOS 和 Android 默认 U2-Net/Vision 路径上：
 
 - `isModelAvailable()` 始终返回 `true`
 - `downloadModel()` 是空操作，返回 `true`
@@ -212,6 +247,7 @@ Future<CutoutResult> NativeCutout.removeBackground(
 
 ```dart
 const CutoutOptions(
+  backend: CutoutBackend.u2Net,
   cropToSubject: false,
   writeToCache: true,
 )
@@ -221,6 +257,7 @@ const CutoutOptions(
 
 - `cropToSubject`：为 `true` 时裁掉透明边、返回贴合主体的紧凑图；为 `false` 时保留原图画布尺寸
 - `writeToCache`：为 `true`（默认）时将 PNG 写入 App 缓存目录并返回 `CutoutFileSuccess`；为 `false` 时返回 `CutoutBytesSuccess`
+- `backend`：Android 分割后端。默认 `CutoutBackend.u2Net`；`CutoutBackend.mlKitSubject` 仅建议用于受控对比测试。可恢复的 ML Kit 可用性 / 加载错误会回退到 U2-Net。
 
 ### `NativeCutout.clearCache`
 
@@ -235,24 +272,31 @@ Future<bool> NativeCutout.clearCache()
 查询底层原生模型 / 运行时是否就绪。
 
 ```dart
-Future<bool> NativeCutout.isModelAvailable()
+Future<bool> NativeCutout.isModelAvailable({
+  CutoutBackend backend = CutoutBackend.u2Net,
+})
 ```
 
 ### `NativeCutout.downloadModel`
 
-在需要时预热 Android 模型路径。由于 U2-Net 模型随包内置，该方法会立即返回
-`true` 并发送 completed 进度事件。
+在需要时预热 Android 模型路径。默认 U2-Net 模型随包内置，因此会立即返回
+`true` 并发送 completed 进度事件；选择 ML Kit 后端时会请求可选模块。
 
 ```dart
-Future<bool> NativeCutout.downloadModel()
+Future<bool> NativeCutout.downloadModel({
+  CutoutBackend backend = CutoutBackend.u2Net,
+})
 ```
 
 ### `NativeCutout.clearModel`
 
-请求释放平台管理的模型资源。Android 模型随包内置，因此这是空操作并返回 `true`。
+请求释放平台管理的模型资源。默认 U2-Net 模型随包内置，因此这是空操作并返回
+`true`；选择 ML Kit 后端时会请求释放可选模块。
 
 ```dart
-Future<bool> NativeCutout.clearModel()
+Future<bool> NativeCutout.clearModel({
+  CutoutBackend backend = CutoutBackend.u2Net,
+})
 ```
 
 ### `NativeCutout.downloadProgress`
@@ -265,7 +309,7 @@ Stream<ModelDownloadProgress> get NativeCutout.downloadProgress
 
 说明：
 
-- Android 上 `downloadModel()` 运行时会立即发出 completed 事件
+- 默认 U2-Net 的 `downloadModel()` 运行时会立即发出 completed 事件
 - iOS 上返回空流
 - 每个事件包含 `state`、`bytesDownloaded`、`totalBytes`、`errorCode`，以及计算字段 `fraction`
 

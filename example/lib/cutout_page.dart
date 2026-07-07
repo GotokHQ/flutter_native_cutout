@@ -8,9 +8,14 @@ import 'package:gal/gal.dart';
 import 'package:native_cutout/native_cutout.dart';
 
 class CutoutPage extends StatefulWidget {
-  const CutoutPage({super.key, required this.imagePath});
+  const CutoutPage({
+    super.key,
+    required this.imagePath,
+    this.backend = CutoutBackend.u2Net,
+  });
 
   final String imagePath;
+  final CutoutBackend backend;
 
   @override
   State<CutoutPage> createState() => _CutoutPageState();
@@ -29,10 +34,12 @@ class _CutoutPageState extends State<CutoutPage> {
   bool _isSaving = false;
   bool _cropToSubject = false;
   bool _writeToCache = true;
+  late CutoutBackend _backend;
 
   @override
   void initState() {
     super.initState();
+    _backend = widget.backend;
     _loadOriginalAndRun();
   }
 
@@ -58,6 +65,7 @@ class _CutoutPageState extends State<CutoutPage> {
     final result = await NativeCutout.removeBackground(
       widget.imagePath,
       options: CutoutOptions(
+        backend: _backend,
         cropToSubject: _cropToSubject,
         writeToCache: _writeToCache,
       ),
@@ -107,6 +115,12 @@ class _CutoutPageState extends State<CutoutPage> {
   void _onWriteToCacheToggle(bool value) {
     if (_isProcessing || value == _writeToCache) return;
     _writeToCache = value;
+    _runCutout();
+  }
+
+  void _onBackendChanged(CutoutBackend value) {
+    if (_isProcessing || value == _backend) return;
+    _backend = value;
     _runCutout();
   }
 
@@ -216,6 +230,14 @@ class _CutoutPageState extends State<CutoutPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (Platform.isAndroid) ...[
+              _BackendOption(
+                backend: _backend,
+                enabled: !_isProcessing,
+                onChanged: _onBackendChanged,
+              ),
+              const SizedBox(height: 8),
+            ],
             _OptionSwitch(
               title: 'cropToSubject',
               subtitle: 'Crop output to the subject bounding box',
@@ -348,7 +370,8 @@ class _CutoutPageState extends State<CutoutPage> {
                         ),
                         const SizedBox(height: 8),
                         _InfoCard(
-                          title: 'Result · ${_resultModeLabel(success)}',
+                          title:
+                              'Result · ${_backendLabel(_backend)} · ${_resultModeLabel(success)}',
                           lines: [
                             if (_resultDimensions != null)
                               '${_resultDimensions!.width.toInt()} × ${_resultDimensions!.height.toInt()}',
@@ -366,6 +389,59 @@ class _CutoutPageState extends State<CutoutPage> {
                 _PathCard(path: success.path),
               ],
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _backendLabel(CutoutBackend backend) => switch (backend) {
+  CutoutBackend.u2Net => 'U2-Net',
+  CutoutBackend.mlKitSubject => 'ML Kit',
+};
+
+class _BackendOption extends StatelessWidget {
+  const _BackendOption({
+    required this.backend,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final CutoutBackend backend;
+  final bool enabled;
+  final ValueChanged<CutoutBackend> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Backend',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<CutoutBackend>(
+              segments: const [
+                ButtonSegment(
+                  value: CutoutBackend.u2Net,
+                  label: Text('U2-Net'),
+                ),
+                ButtonSegment(
+                  value: CutoutBackend.mlKitSubject,
+                  label: Text('ML Kit'),
+                ),
+              ],
+              selected: {backend},
+              onSelectionChanged: enabled
+                  ? (values) => onChanged(values.single)
+                  : null,
+            ),
           ],
         ),
       ),
@@ -409,10 +485,7 @@ class _PathCard extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               path,
-              style: const TextStyle(
-                fontSize: 12,
-                fontFamily: 'monospace',
-              ),
+              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
             ),
           ],
         ),
@@ -463,10 +536,7 @@ class _OptionSwitch extends StatelessWidget {
                 ],
               ),
             ),
-            Switch(
-              value: value,
-              onChanged: enabled ? onChanged : null,
-            ),
+            Switch(value: value, onChanged: enabled ? onChanged : null),
           ],
         ),
       ),

@@ -1,3 +1,14 @@
+## 0.3.2 (GotokHQ fork)
+
+* Android: added an opt-in `CutoutBackend.mlKitSubject` backend so internal testers can compare ML Kit Subject Segmentation against the default bundled U2-Net model.
+* Android: ML Kit availability/load/inference failures now log a warning and fall back to bundled U2-Net for recoverable failures.
+* Dart: added `CutoutOptions.backend` plus backend-aware `isModelAvailable`, `downloadModel`, and `clearModel` helpers.
+* Example: added Android backend selectors for quick side-by-side quality checks.
+
+## 0.3.1 (GotokHQ fork)
+
+* Android: migrated the plugin to Flutter 3.44 built-in Kotlin and raised the minimum Flutter/Dart SDK constraints accordingly.
+
 ## 0.3.0 (GotokHQ fork)
 
 * Android: replaced ML Kit Subject Segmentation with a bundled U2-Net light model running fully on-device, removing the Google Play services optional module and download dependency.
