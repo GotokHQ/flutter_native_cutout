@@ -1,3 +1,10 @@
+## 0.4.0 (GotokHQ fork)
+
+* Android: removed the bundled `u2netp.onnx` model and ONNX Runtime dependency to reduce app size.
+* Android: ML Kit Subject Segmentation is now the only Android cutout backend. The model lifecycle APIs still check, warm up, report progress for, and clear the Play services optional module.
+* Dart: changed default `CutoutOptions`, model availability, warm-up, and clear-model backend values to `CutoutBackend.mlKitSubject`.
+* Example/docs: removed U2-Net comparison UI and documented the MLKit-only Android path.
+
 ## 0.3.2 (GotokHQ fork)
 
 * Android: added an opt-in `CutoutBackend.mlKitSubject` backend so internal testers can compare ML Kit Subject Segmentation against the default bundled U2-Net model.

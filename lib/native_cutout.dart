@@ -18,13 +18,16 @@ enum CutoutErrorCode {
 ///
 /// iOS always uses Apple Vision regardless of this value.
 enum CutoutBackend {
-  /// Bundled U2-Net light ONNX model. This is the default Android backend.
+  /// Legacy Android U2-Net backend.
+  ///
+  /// Kept for source compatibility with older callers and remote-config values.
+  /// Current Android builds use [mlKitSubject] even if this value is requested.
   u2Net,
 
-  /// Google ML Kit Subject Segmentation. Android-only and opt-in because the
-  /// unbundled Play services module can still trigger unrecoverable native
-  /// crashes on some devices. Recoverable ML Kit availability/load failures
-  /// fall back to [u2Net] on Android.
+  /// Google ML Kit Subject Segmentation.
+  ///
+  /// Android downloads this as a Google Play services optional module. iOS
+  /// ignores this value and always uses Apple Vision.
   mlKitSubject,
 }
 
@@ -32,9 +35,9 @@ enum CutoutBackend {
 class CutoutOptions {
   /// Segmentation backend to use on Android.
   ///
-  /// Defaults to [CutoutBackend.u2Net]. Use [CutoutBackend.mlKitSubject] only
-  /// for internal comparison/testing because ML Kit native crashes cannot be
-  /// caught by Dart or Kotlin. Recoverable ML Kit failures fall back to U2-Net.
+  /// Defaults to [CutoutBackend.mlKitSubject]. Current Android builds are
+  /// MLKit-only; legacy [CutoutBackend.u2Net] requests are treated as ML Kit
+  /// by the native Android implementation.
   final CutoutBackend backend;
 
   /// Whether to crop the result to the subject bounds.
@@ -62,7 +65,7 @@ class CutoutOptions {
   final int edgeErode;
 
   const CutoutOptions({
-    this.backend = CutoutBackend.u2Net,
+    this.backend = CutoutBackend.mlKitSubject,
     this.cropToSubject = false,
     this.writeToCache = true,
     this.featherRadius = 0,
@@ -92,13 +95,15 @@ sealed class CutoutSuccess extends CutoutResult {
   /// Backend requested by the caller.
   final CutoutBackend requestedBackend;
 
-  /// True when the requested backend failed recoverably and Android used the
-  /// bundled U2-Net fallback.
+  /// True when a platform uses a fallback backend.
+  ///
+  /// The current Android implementation is MLKit-only, so this is normally
+  /// false and is kept for compatibility with previous result metadata.
   final bool didFallback;
 
   const CutoutSuccess({
-    this.backend = CutoutBackend.u2Net,
-    this.requestedBackend = CutoutBackend.u2Net,
+    this.backend = CutoutBackend.mlKitSubject,
+    this.requestedBackend = CutoutBackend.mlKitSubject,
     this.didFallback = false,
   });
 }
@@ -149,8 +154,8 @@ class CutoutFailure extends CutoutResult {
 
 /// Install state reported by Android model warm-up calls.
 ///
-/// Android currently bundles its model, so `completed` is emitted immediately
-/// when [NativeCutout.downloadModel] is called.
+/// Android reports Google Play services optional module install states while
+/// warming up ML Kit Subject Segmentation.
 enum ModelInstallState {
   unknown,
   pending,
@@ -170,10 +175,10 @@ class ModelDownloadProgress {
   /// Current install state reported by Play Services.
   final ModelInstallState state;
 
-  /// Bytes downloaded so far. Always 0 when the model is bundled.
+  /// Bytes downloaded so far, when Play services reports a known size.
   final int bytesDownloaded;
 
-  /// Total bytes to download. Always 0 when the model is bundled.
+  /// Total bytes to download, or 0 when Play services does not report a size.
   final int totalBytes;
 
   /// Play Services error code when [state] is [ModelInstallState.failed].
@@ -197,9 +202,7 @@ class ModelDownloadProgress {
 
 /// AI-powered background removal using native platform APIs.
 ///
-/// Uses iOS Vision Framework (iOS 17+) and a bundled Android U2-Net model by
-/// default. Android can opt into ML Kit Subject Segmentation for comparison via
-/// [CutoutOptions.backend].
+/// Uses iOS Vision Framework (iOS 17+) and Android ML Kit Subject Segmentation.
 class NativeCutout {
   NativeCutout._();
 
@@ -247,50 +250,46 @@ class NativeCutout {
 
   /// Checks if the native model/runtime is available and ready to use.
   ///
-  /// On Android, [backend] controls which runtime is checked. The default
-  /// bundled U2-Net backend returns true unless the native runtime fails to
-  /// load; ML Kit checks the Play services optional module.
+  /// On Android, this checks whether the Google Play services ML Kit Subject
+  /// Segmentation optional module is available.
   ///
   /// On iOS, this always returns true as the Vision framework is built-in.
   static Future<bool> isModelAvailable({
-    CutoutBackend backend = CutoutBackend.u2Net,
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
   }) {
     return NativeCutoutPlatform.instance.isModelAvailable(backend: backend);
   }
 
   /// Warms up the model required for background removal.
   ///
-  /// On Android, the default U2-Net model is bundled with the app, so this
-  /// emits a completed progress event and returns true. For
-  /// [CutoutBackend.mlKitSubject], this requests the Play services optional
-  /// Subject Segmentation module.
+  /// On Android, this requests the Google Play services optional Subject
+  /// Segmentation module.
   ///
   /// On iOS, this is a no-op and always returns true.
   ///
   /// Returns true if the model is ready to use after this call.
   static Future<bool> downloadModel({
-    CutoutBackend backend = CutoutBackend.u2Net,
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
   }) {
     return NativeCutoutPlatform.instance.downloadModel(backend: backend);
   }
 
   /// Requests release of any platform-managed model resources.
   ///
-  /// Android bundles the default U2-Net model, so there is no downloaded module
-  /// to remove. For [CutoutBackend.mlKitSubject], this asks Play services to
-  /// release the optional Subject Segmentation module.
+  /// On Android, this asks Play services to release the optional Subject
+  /// Segmentation module.
   ///
   /// On iOS, this is a no-op and always returns true.
   static Future<bool> clearModel({
-    CutoutBackend backend = CutoutBackend.u2Net,
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
   }) {
     return NativeCutoutPlatform.instance.clearModel(backend: backend);
   }
 
   /// Broadcast stream of model warm-up progress events while [downloadModel] runs.
   ///
-  /// Android emits a completed event immediately because the model is bundled.
-  /// iOS returns an empty stream since the Vision framework is bundled with the system.
+  /// Android emits Play services module install progress. iOS returns an empty
+  /// stream since the Vision framework is bundled with the system.
   static Stream<ModelDownloadProgress> get downloadProgress =>
       NativeCutoutPlatform.instance.downloadProgress;
 }

@@ -1,9 +1,5 @@
 package com.hugo.native_cutout
 
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -32,8 +28,6 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -42,12 +36,10 @@ import kotlin.math.roundToInt
 private const val TAG = "NativeCutoutPlugin"
 
 private enum class CutoutBackend {
-    U2NET,
     MLKIT_SUBJECT
 }
 
 private fun CutoutBackend.wireName(): String = when (this) {
-    CutoutBackend.U2NET -> "u2Net"
     CutoutBackend.MLKIT_SUBJECT -> "mlKitSubject"
 }
 
@@ -56,7 +48,6 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     private lateinit var progressChannel: EventChannel
     private lateinit var context: android.content.Context
     private var progressSink: EventChannel.EventSink? = null
-    private var segmenter: U2NetSegmenter? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val workerExecutor = Executors.newSingleThreadExecutor()
 
@@ -87,24 +78,9 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         progressSink = null
     }
 
-    private fun getSegmenter(): U2NetSegmenter {
-        return segmenter ?: U2NetSegmenter(context).also { segmenter = it }
-    }
-
+    @Suppress("UNUSED_PARAMETER")
     private fun parseBackend(value: String?): CutoutBackend = when (value) {
-        "mlKitSubject" -> CutoutBackend.MLKIT_SUBJECT
-        else -> CutoutBackend.U2NET
-    }
-
-    private fun emitModelReadyProgress() {
-        val sink = progressSink ?: return
-        val payload = mapOf(
-            "state" to "completed",
-            "bytesDownloaded" to 0L,
-            "totalBytes" to 0L,
-            "errorCode" to null,
-        )
-        mainHandler.post { sink.success(payload) }
+        else -> CutoutBackend.MLKIT_SUBJECT
     }
 
     private fun emitProgress(update: ModuleInstallStatusUpdate) {
@@ -133,16 +109,13 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
             "isModelAvailable" -> checkModelAvailability(
-                result,
-                parseBackend(call.argument<String>("backend"))
+                result
             )
             "downloadModel" -> downloadModel(
-                result,
-                parseBackend(call.argument<String>("backend"))
+                result
             )
             "clearModel" -> clearModel(
-                result,
-                parseBackend(call.argument<String>("backend"))
+                result
             )
             "clearCache" -> clearCache(result)
             "removeBackground" -> {
@@ -174,35 +147,23 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         }
     }
 
-    private fun checkModelAvailability(result: Result, backend: CutoutBackend) {
-        when (backend) {
-            CutoutBackend.U2NET -> workerExecutor.execute {
-                try {
-                    getSegmenter()
-                    postSuccess(result, true)
-                } catch (e: Exception) {
-                    postError(result, "CHECK_FAILED", "Failed to load bundled model: ${e.message}")
-                }
-            }
-            CutoutBackend.MLKIT_SUBJECT -> {
-                val segmenter = SubjectSegmentation.getClient(
-                    SubjectSegmenterOptions.Builder().build()
-                )
-                val moduleInstallClient = ModuleInstall.getClient(context)
+    private fun checkModelAvailability(result: Result) {
+        val segmenter = SubjectSegmentation.getClient(
+            SubjectSegmenterOptions.Builder().build()
+        )
+        val moduleInstallClient = ModuleInstall.getClient(context)
 
-                moduleInstallClient.areModulesAvailable(segmenter)
-                    .addOnSuccessListener { response ->
-                        result.success(response.areModulesAvailable())
-                    }
-                    .addOnFailureListener { e ->
-                        result.error(
-                            "CHECK_FAILED",
-                            "Failed to check ML Kit model availability: ${e.message}",
-                            null
-                        )
-                    }
+        moduleInstallClient.areModulesAvailable(segmenter)
+            .addOnSuccessListener { response ->
+                result.success(response.areModulesAvailable())
             }
-        }
+            .addOnFailureListener { e ->
+                result.error(
+                    "CHECK_FAILED",
+                    "Failed to check ML Kit model availability: ${e.message}",
+                    null
+                )
+            }
     }
 
     private fun clearCache(result: Result) {
@@ -217,64 +178,46 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         }
     }
 
-    private fun clearModel(result: Result, backend: CutoutBackend) {
-        when (backend) {
-            CutoutBackend.U2NET -> result.success(true)
-            CutoutBackend.MLKIT_SUBJECT -> {
-                val segmenter = SubjectSegmentation.getClient(
-                    SubjectSegmenterOptions.Builder().build()
-                )
-                val moduleInstallClient = ModuleInstall.getClient(context)
+    private fun clearModel(result: Result) {
+        val segmenter = SubjectSegmentation.getClient(
+            SubjectSegmenterOptions.Builder().build()
+        )
+        val moduleInstallClient = ModuleInstall.getClient(context)
 
-                moduleInstallClient.releaseModules(segmenter)
-                    .addOnSuccessListener {
-                        result.success(true)
-                    }
-                    .addOnFailureListener { e ->
-                        result.error("CLEAR_FAILED", "Failed to clear ML Kit model: ${e.message}", null)
-                    }
+        moduleInstallClient.releaseModules(segmenter)
+            .addOnSuccessListener {
+                result.success(true)
             }
-        }
+            .addOnFailureListener { e ->
+                result.error("CLEAR_FAILED", "Failed to clear ML Kit model: ${e.message}", null)
+            }
     }
 
-    private fun downloadModel(result: Result, backend: CutoutBackend) {
-        when (backend) {
-            CutoutBackend.U2NET -> workerExecutor.execute {
-                try {
-                    getSegmenter()
-                    emitModelReadyProgress()
-                    postSuccess(result, true)
-                } catch (e: Exception) {
-                    postError(result, "DOWNLOAD_FAILED", "Failed to load bundled model: ${e.message}")
-                }
+    private fun downloadModel(result: Result) {
+        val segmenter = SubjectSegmentation.getClient(
+            SubjectSegmenterOptions.Builder().build()
+        )
+        val moduleInstallClient = ModuleInstall.getClient(context)
+        val listener = InstallStatusListener { update -> emitProgress(update) }
+
+        val moduleInstallRequest = ModuleInstallRequest.newBuilder()
+            .addApi(segmenter)
+            .setListener(listener)
+            .build()
+
+        moduleInstallClient.installModules(moduleInstallRequest)
+            .addOnSuccessListener {
+                moduleInstallClient.unregisterListener(listener)
+                result.success(true)
             }
-            CutoutBackend.MLKIT_SUBJECT -> {
-                val segmenter = SubjectSegmentation.getClient(
-                    SubjectSegmenterOptions.Builder().build()
+            .addOnFailureListener { e ->
+                moduleInstallClient.unregisterListener(listener)
+                result.error(
+                    "DOWNLOAD_FAILED",
+                    "Failed to download ML Kit model: ${e.message}",
+                    null
                 )
-                val moduleInstallClient = ModuleInstall.getClient(context)
-                val listener = InstallStatusListener { update -> emitProgress(update) }
-
-                val moduleInstallRequest = ModuleInstallRequest.newBuilder()
-                    .addApi(segmenter)
-                    .setListener(listener)
-                    .build()
-
-                moduleInstallClient.installModules(moduleInstallRequest)
-                    .addOnSuccessListener {
-                        moduleInstallClient.unregisterListener(listener)
-                        result.success(true)
-                    }
-                    .addOnFailureListener { e ->
-                        moduleInstallClient.unregisterListener(listener)
-                        result.error(
-                            "DOWNLOAD_FAILED",
-                            "Failed to download ML Kit model: ${e.message}",
-                            null
-                        )
-                    }
             }
-        }
     }
 
     private fun removeBackground(
@@ -308,18 +251,11 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
                         "image=${bitmap.width}x${bitmap.height}, cropToSubject=$cropToSubject, " +
                         "writeToCache=$writeToCache, featherRadius=$featherRadius, edgeErode=$edgeErode"
                 )
-                val (segmentation, effectiveBackend) = when (backend) {
-                    CutoutBackend.U2NET -> getSegmenter().segment(bitmap) to CutoutBackend.U2NET
-                    CutoutBackend.MLKIT_SUBJECT -> segmentWithMlKitOrFallback(bitmap)
-                }
+                val effectiveBackend = CutoutBackend.MLKIT_SUBJECT
+                val segmentation = segmentWithMlKit(bitmap)
                 val mask = segmentation.mask
 
-                val hasSubject = when (effectiveBackend) {
-                    // U2-Net is min/max normalized, so subject presence must be
-                    // judged on the raw sigmoid peak, not the normalized values.
-                    CutoutBackend.U2NET -> segmentation.peakConfidence > 0.5f
-                    CutoutBackend.MLKIT_SUBJECT -> segmentation.peakConfidence > 0.1f
-                }
+                val hasSubject = segmentation.peakConfidence > 0.1f
                 Log.d(
                     TAG,
                     "removeBackground segmented: requestedBackend=$backend, " +
@@ -416,23 +352,8 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         )
     }
 
-    private fun segmentWithMlKitOrFallback(bitmap: Bitmap): Pair<SegmentationMask, CutoutBackend> {
-        return try {
-            Log.d(TAG, "ML Kit segmentation requested")
-            segmentWithMlKit(bitmap) to CutoutBackend.MLKIT_SUBJECT
-        } catch (e: NoSubjectException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(
-                TAG,
-                "ML Kit Subject Segmentation unavailable or failed; falling back to bundled U2-Net",
-                e
-            )
-            getSegmenter().segment(bitmap) to CutoutBackend.U2NET
-        }
-    }
-
     private fun segmentWithMlKit(bitmap: Bitmap): SegmentationMask {
+        Log.d(TAG, "ML Kit segmentation requested")
         val options = SubjectSegmenterOptions.Builder()
             .enableForegroundConfidenceMask()
             .build()
@@ -664,8 +585,6 @@ class NativeCutoutPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         channel.setMethodCallHandler(null)
         progressChannel.setStreamHandler(null)
         progressSink = null
-        segmenter?.close()
-        segmenter = null
         workerExecutor.shutdown()
     }
 }
@@ -676,95 +595,6 @@ private data class SegmentationMask(
     val mask: FloatBuffer,
     val width: Int,
     val height: Int,
-    /** Highest raw (pre-normalization) confidence; low values mean no subject. */
+    /** Highest foreground confidence; low values mean no subject. */
     val peakConfidence: Float
 )
-
-private class U2NetSegmenter(private val context: Context) : AutoCloseable {
-    companion object {
-        private const val MODEL_NAME = "u2netp.onnx"
-        private const val INPUT_SIZE = 320
-        private val MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
-        private val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
-        private val INPUT_SHAPE = longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong())
-    }
-
-    private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
-    private val session: OrtSession
-    private val inputName: String
-
-    init {
-        val modelBytes = context.assets.open(MODEL_NAME).use { it.readBytes() }
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
-        session = OrtSession.SessionOptions().use { options ->
-            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            options.setIntraOpNumThreads(threads)
-            environment.createSession(modelBytes, options)
-        }
-        inputName = session.inputNames.first()
-        Log.d(TAG, "U2-Net session initialized: model=$MODEL_NAME, bytes=${modelBytes.size}, threads=$threads")
-    }
-
-    fun segment(bitmap: Bitmap): SegmentationMask {
-        Log.d(TAG, "U2-Net inference start: input=${bitmap.width}x${bitmap.height}, modelInput=${INPUT_SIZE}x$INPUT_SIZE")
-        val modelBitmap = Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true)
-        val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
-        modelBitmap.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
-        if (modelBitmap != bitmap) modelBitmap.recycle()
-
-        val input = ByteBuffer
-            .allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * java.lang.Float.BYTES)
-            .order(ByteOrder.nativeOrder())
-            .asFloatBuffer()
-
-        for (channel in 0 until 3) {
-            for (pixel in pixels) {
-                val value = when (channel) {
-                    0 -> (pixel shr 16) and 0xFF
-                    1 -> (pixel shr 8) and 0xFF
-                    else -> pixel and 0xFF
-                } / 255f
-                input.put((value - MEAN[channel]) / STD[channel])
-            }
-        }
-        input.rewind()
-
-        OnnxTensor.createTensor(environment, input, INPUT_SHAPE).use { tensor ->
-            session.run(mapOf(inputName to tensor)).use { outputs ->
-                val outputTensor = outputs.get(0) as? OnnxTensor
-                    ?: throw IllegalStateException("U2-Net did not return a float mask")
-                val output = outputTensor.floatBuffer
-                    ?: throw IllegalStateException("U2-Net mask output is not float data")
-                return buildMask(output)
-            }
-        }
-    }
-
-    private fun buildMask(output: FloatBuffer): SegmentationMask {
-        output.rewind()
-        val raw = FloatArray(INPUT_SIZE * INPUT_SIZE)
-        var min = Float.POSITIVE_INFINITY
-        var max = Float.NEGATIVE_INFINITY
-        for (i in raw.indices) {
-            val value = output.get()
-            raw[i] = value
-            if (value < min) min = value
-            if (value > max) max = value
-        }
-
-        val range = (max - min).takeIf { it > 1e-6f } ?: 1f
-        for (i in raw.indices) {
-            raw[i] = ((raw[i] - min) / range).coerceIn(0f, 1f)
-        }
-        return SegmentationMask(
-            FloatBuffer.wrap(raw),
-            INPUT_SIZE,
-            INPUT_SIZE,
-            peakConfidence = max
-        )
-    }
-
-    override fun close() {
-        session.close()
-    }
-}

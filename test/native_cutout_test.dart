@@ -24,7 +24,9 @@ class _FakeNativeCutoutPlatform extends NativeCutoutPlatform
   }
 
   @override
-  Future<bool> clearModel({CutoutBackend backend = CutoutBackend.u2Net}) async {
+  Future<bool> clearModel({
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
+  }) async {
     clearModelCalled = true;
     capturedClearModelBackend = backend;
     return true;
@@ -56,7 +58,7 @@ void main() {
       await NativeCutout.removeBackground('/tmp/input.jpg');
 
       expect(fakePlatform.capturedImagePath, '/tmp/input.jpg');
-      expect(fakePlatform.capturedOptions?.backend, CutoutBackend.u2Net);
+      expect(fakePlatform.capturedOptions?.backend, CutoutBackend.mlKitSubject);
       expect(fakePlatform.capturedOptions?.cropToSubject, isFalse);
       expect(fakePlatform.capturedOptions?.writeToCache, isTrue);
     });

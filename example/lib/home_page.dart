@@ -2,20 +2,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'
-    show Clipboard, ClipboardData, rootBundle;
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:image_picker/image_picker.dart';
 import 'package:native_cutout/native_cutout.dart';
 
 import 'cutout_page.dart';
 
 const String _sampleAsset = 'assets/cat.jpg';
-const String _modelDocUrl = 'https://huggingface.co/Heliosoph/u2net-onnx';
-
-String _backendLabel(CutoutBackend backend) => switch (backend) {
-  CutoutBackend.u2Net => 'U2-Net',
-  CutoutBackend.mlKitSubject => 'ML Kit',
-};
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -30,7 +23,7 @@ class _HomePageState extends State<HomePage> {
   bool? _isModelAvailable;
   bool _isDownloadingModel = false;
   bool _isClearingModel = false;
-  CutoutBackend _backend = CutoutBackend.u2Net;
+  final CutoutBackend _backend = CutoutBackend.mlKitSubject;
   ModelDownloadProgress? _progress;
   StreamSubscription<ModelDownloadProgress>? _progressSub;
 
@@ -50,16 +43,6 @@ class _HomePageState extends State<HomePage> {
     final available = await NativeCutout.isModelAvailable(backend: _backend);
     if (mounted) setState(() => _isModelAvailable = available);
     return available;
-  }
-
-  Future<void> _setBackend(CutoutBackend backend) async {
-    if (backend == _backend || _isDownloadingModel || _isClearingModel) return;
-    setState(() {
-      _backend = backend;
-      _isModelAvailable = null;
-      _progress = null;
-    });
-    await _checkModelAvailability();
   }
 
   Future<void> _downloadModel() async {
@@ -145,8 +128,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final canRun =
-        _isModelAvailable == true || _backend == CutoutBackend.mlKitSubject;
+    final canRun = _isModelAvailable == true;
     final isAndroid = Platform.isAndroid;
     return Scaffold(
       appBar: AppBar(
@@ -159,14 +141,7 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (isAndroid) ...[
-              _BackendSelector(
-                backend: _backend,
-                enabled: !_isDownloadingModel && !_isClearingModel,
-                onChanged: _setBackend,
-              ),
-              const SizedBox(height: 16),
               _ModelManagerCard(
-                backend: _backend,
                 isModelAvailable: _isModelAvailable,
                 isDownloading: _isDownloadingModel,
                 isClearing: _isClearingModel,
@@ -204,7 +179,6 @@ class _HomePageState extends State<HomePage> {
 
 class _ModelManagerCard extends StatelessWidget {
   const _ModelManagerCard({
-    required this.backend,
     required this.isModelAvailable,
     required this.isDownloading,
     required this.isClearing,
@@ -214,7 +188,6 @@ class _ModelManagerCard extends StatelessWidget {
     required this.onRefresh,
   });
 
-  final CutoutBackend backend;
   final bool? isModelAvailable;
   final bool isDownloading;
   final bool isClearing;
@@ -250,7 +223,7 @@ class _ModelManagerCard extends StatelessWidget {
                   ? 'Warming up model...'
                   : isClearing
                   ? 'Clearing model resources...'
-                  : 'Android ${_backendLabel(backend)} manager',
+                  : 'Android ML Kit manager',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 color: scheme.onTertiaryContainer,
@@ -336,63 +309,6 @@ class _ModelManagerCard extends StatelessWidget {
   }
 }
 
-class _BackendSelector extends StatelessWidget {
-  const _BackendSelector({
-    required this.backend,
-    required this.enabled,
-    required this.onChanged,
-  });
-
-  final CutoutBackend backend;
-  final bool enabled;
-  final ValueChanged<CutoutBackend> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Android segmentation backend',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            SegmentedButton<CutoutBackend>(
-              segments: const [
-                ButtonSegment(
-                  value: CutoutBackend.u2Net,
-                  label: Text('U2-Net'),
-                ),
-                ButtonSegment(
-                  value: CutoutBackend.mlKitSubject,
-                  label: Text('ML Kit'),
-                ),
-              ],
-              selected: {backend},
-              onSelectionChanged: enabled
-                  ? (values) => onChanged(values.single)
-                  : null,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              backend == CutoutBackend.u2Net
-                  ? 'Default: bundled ONNX model, offline, no Play services module.'
-                  : 'Comparison only: uses ML Kit optional module and may still crash natively on affected devices.',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _IntroDetails extends StatelessWidget {
   const _IntroDetails({required this.scheme, required this.isModelAvailable});
 
@@ -405,37 +321,16 @@ class _IntroDetails extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _InfoRow(label: 'Source', value: 'Bundled app asset', color: textColor),
         _InfoRow(
           label: 'Model',
-          value: 'U2-Net light (u2netp)',
+          value: 'ML Kit Subject Segmentation',
           color: textColor,
         ),
         const SizedBox(height: 8),
-        GestureDetector(
-          onLongPress: () async {
-            await Clipboard.setData(const ClipboardData(text: _modelDocUrl));
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Documentation link copied')),
-            );
-          },
-          child: Text(
-            _modelDocUrl,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: textColor,
-              fontSize: 11,
-              decoration: TextDecoration.underline,
-              decorationColor: textColor.withValues(alpha: 0.5),
-            ),
-          ),
-        ),
-        const SizedBox(height: 4),
         Text(
           isModelAvailable == true
-              ? 'Model is bundled and available offline. Long-press the link above to copy it.'
-              : 'Warm-up checks the bundled model/runtime before processing. Long-press the link above to copy it.',
+              ? 'The Play services optional module is available.'
+              : 'Warm-up requests the Play services optional module before processing.',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: textColor.withValues(alpha: 0.8),
@@ -445,8 +340,8 @@ class _IntroDetails extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           isModelAvailable == true
-              ? 'No network or Google Play services module is required.'
-              : 'The model ships inside the app package.',
+              ? 'Cutout can run without the bundled U2-Net asset.'
+              : 'A network connection may be needed the first time.',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: textColor.withValues(alpha: 0.7),
@@ -515,7 +410,7 @@ class _ProgressDetails extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         Text(
-          'Bundled model warm-up completes locally',
+          'ML Kit module warm-up is handled by Play services',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: scheme.error,

@@ -26,20 +26,23 @@ abstract class NativeCutoutPlatform extends PlatformInterface {
   }
 
   /// Checks if the native model/runtime is available.
-  /// Always returns true on bundled-model platforms.
-  Future<bool> isModelAvailable({CutoutBackend backend = CutoutBackend.u2Net}) {
+  Future<bool> isModelAvailable({
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
+  }) {
     throw UnimplementedError('isModelAvailable() has not been implemented.');
   }
 
   /// Warms up the native model when needed.
-  /// No-op on bundled-model platforms.
-  Future<bool> downloadModel({CutoutBackend backend = CutoutBackend.u2Net}) {
+  Future<bool> downloadModel({
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
+  }) {
     throw UnimplementedError('downloadModel() has not been implemented.');
   }
 
   /// Requests release of platform-managed model resources.
-  /// No-op when the model is bundled.
-  Future<bool> clearModel({CutoutBackend backend = CutoutBackend.u2Net}) {
+  Future<bool> clearModel({
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
+  }) {
     throw UnimplementedError('clearModel() has not been implemented.');
   }
 

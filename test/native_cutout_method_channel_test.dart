@@ -37,7 +37,7 @@ void main() {
       expect(calls.single.arguments, <String, dynamic>{
         'imagePath': '/tmp/photo.jpg',
         'options': <String, dynamic>{
-          'backend': 'u2Net',
+          'backend': 'mlKitSubject',
           'cropToSubject': true,
           'writeToCache': false,
           'featherRadius': 0.0,
@@ -47,8 +47,8 @@ void main() {
 
       expect(result, isA<CutoutBytesSuccess>());
       expect((result as CutoutBytesSuccess).pngBytes, [1, 2, 3]);
-      expect(result.backend, CutoutBackend.u2Net);
-      expect(result.requestedBackend, CutoutBackend.u2Net);
+      expect(result.backend, CutoutBackend.mlKitSubject);
+      expect(result.requestedBackend, CutoutBackend.mlKitSubject);
       expect(result.didFallback, isFalse);
     });
 
@@ -67,7 +67,7 @@ void main() {
       expect(calls.single.arguments, <String, dynamic>{
         'imagePath': '/tmp/photo.jpg',
         'options': <String, dynamic>{
-          'backend': 'u2Net',
+          'backend': 'mlKitSubject',
           'cropToSubject': false,
           'writeToCache': true,
           'featherRadius': 0.0,
@@ -77,8 +77,8 @@ void main() {
 
       expect(result, isA<CutoutFileSuccess>());
       expect((result as CutoutFileSuccess).path, '/tmp/cache/cutout.png');
-      expect(result.backend, CutoutBackend.u2Net);
-      expect(result.requestedBackend, CutoutBackend.u2Net);
+      expect(result.backend, CutoutBackend.mlKitSubject);
+      expect(result.requestedBackend, CutoutBackend.mlKitSubject);
       expect(result.didFallback, isFalse);
     });
 
@@ -156,7 +156,9 @@ void main() {
       expect(result, isTrue);
       expect(calls, hasLength(1));
       expect(calls.single.method, 'clearModel');
-      expect(calls.single.arguments, <String, dynamic>{'backend': 'u2Net'});
+      expect(calls.single.arguments, <String, dynamic>{
+        'backend': 'mlKitSubject',
+      });
     });
 
     test('forwards ML Kit backend to native options', () async {

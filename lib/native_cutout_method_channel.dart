@@ -111,7 +111,7 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
 
   @override
   Future<bool> isModelAvailable({
-    CutoutBackend backend = CutoutBackend.u2Net,
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
   }) async {
     // iOS Vision framework is built-in, always available
     if (Platform.isIOS) return true;
@@ -129,7 +129,7 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
 
   @override
   Future<bool> downloadModel({
-    CutoutBackend backend = CutoutBackend.u2Net,
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
   }) async {
     // iOS Vision framework is built-in, no warm-up needed.
     if (Platform.isIOS) return true;
@@ -145,7 +145,9 @@ class MethodChannelNativeCutout extends NativeCutoutPlatform {
   }
 
   @override
-  Future<bool> clearModel({CutoutBackend backend = CutoutBackend.u2Net}) async {
+  Future<bool> clearModel({
+    CutoutBackend backend = CutoutBackend.mlKitSubject,
+  }) async {
     // iOS Vision framework is built-in, no downloaded module to clear.
     if (Platform.isIOS) return true;
 
